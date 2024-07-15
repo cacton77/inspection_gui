@@ -8,8 +8,9 @@ import numpy as np
 import threading
 import time
 import matplotlib.pyplot as plt
-from io import BytesIO
 import message_filters
+from io import BytesIO
+from math import pi
 
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
@@ -39,11 +40,15 @@ class WebcamStream(Node):
         # Image, "/camera/camera/depth/image_rect_raw", self.depth_image_callback, 10)
         depth_image_sub = message_filters.Subscriber(self,
                                                      Image, "/camera/camera/depth/image_rect_raw")
-        ts = Tf2MessageFilter(depth_image_sub, 'world',
-                              'camera_link', queue_size=1000)
+        rgb_image_sub = message_filters.Subscriber(self,
+                                                   Image, "/camera/camera/color/image_rect_raw")
+        ts = Tf2MessageFilter(self, [depth_image_sub, rgb_image_sub], 'world',
+                              'camera_depth_optical_frame', queue_size=1000)
         ts.registerCallback(self.depth_image_callback)
 
         # Generate first point cloud
+        self.camera = o3d.geometry.LineSet().create_camera_visualization(
+            self.depth_intrinsic, extrinsic=np.eye(4))
         self.geom_pcd = self.generate_point_cloud()
 
         # Generate an np array of green colors with length of geom_pcd.points
@@ -72,24 +77,51 @@ class WebcamStream(Node):
         self.depth_intrinsic = o3d.camera.PinholeCameraIntrinsic(
             msg.width, msg.height, msg.K[0], msg.K[4], msg.K[2], msg.K[5])
 
-    def depth_image_callback(self, msg):
-        self.depth_image = self.bridge.imgmsg_to_cv2(
-            msg, desired_encoding="passthrough").astype(np.float32) / 10.0
+    def depth_image_callback(self, dmap_msg, rgb_msg, tf_msg):
+        depth_image = self.bridge.imgmsg_to_cv2(
+            dmap_msg, desired_encoding="passthrough").astype(np.float32) / 1000.0
+        rgb_image = self.bridge.imgmsg_to_cv2(
+            rgb_msg, desired_encoding="passthrough")
         # Set all pixels in image above 1000 to 0
-        depth_image_cm = self.depth_image / 1.0
-        depth_image_cm[depth_image_cm > 30] = 0
+        depth_image_cm = depth_image / 1.0
+        depth_image_cm[depth_image_cm > 0.3] = 0
         # Apply gaussian blur to depth image
-        depth_image_cm = cv2.GaussianBlur(
-            depth_image_cm, (7, 7), 0, 0, cv2.BORDER_DEFAULT)
+        # depth_image_cm = cv2.GaussianBlur(
+        # depth_image_cm, (7, 7), 0, 0, cv2.BORDER_DEFAULT)
+        self.depth_image = depth_image_cm
+        rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(
+            o3d.geometry.Image(rgb_image), o3d.geometry.Image(depth_image_cm), depth_scale=1.0, depth_trunc=250.0, convert_rgb_to_intensity=False)
 
-        self.geom_pcd = o3d.geometry.PointCloud().create_from_depth_image(o3d.geometry.Image(depth_image_cm),
-                                                                          intrinsic=self.depth_intrinsic, extrinsic=np.eye(4), depth_scale=1.0, depth_trunc=250.0)
+        trans = tf_msg.transform.translation
+        quat = tf_msg.transform.rotation
+        R = o3d.geometry.get_rotation_matrix_from_quaternion(
+            [quat.w, quat.x, quat.y, quat.z])
+
+        # Combine trans and R into a 4x4 transformation matrix
+        T = np.eye(4)
+        T[:3, :3] = R
+        T[0, 3] = trans.x
+        T[1, 3] = trans.y
+        T[2, 3] = trans.z
+
+        self.camera = o3d.geometry.LineSet().create_camera_visualization(
+            self.depth_intrinsic, extrinsic=np.eye(4))
+        # self.geom_pcd = o3d.geometry.PointCloud().create_from_depth_image(o3d.geometry.Image(depth_image_cm),
+        #   intrinsic=self.depth_intrinsic, extrinsic=np.eye(4), depth_scale=1.0)  # , depth_trunc=250.0)
+        self.geom_pcd = o3d.geometry.PointCloud().create_from_rgbd_image(
+            rgbd_image, intrinsic=self.depth_intrinsic)  # , extrinsic=np.eye(4), depth_scale=1.0)
+
+        self.camera.transform(T)
+        self.geom_pcd.transform(T)
 
     def read_depth_image(self):
         return self.depth_image.copy()
 
     def read_point_cloud(self):
         return self.geom_pcd
+
+    def read_camera(self):
+        return self.camera
 
     # method to stop reading frames
     def stop(self):

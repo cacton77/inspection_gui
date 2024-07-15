@@ -14,7 +14,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from io import BytesIO
 from inspection_gui.webcam_stream import WebcamStream
 
-plt.style.use('fivethirtyeight')
+plt.style.use('dark_background')
 
 isMacOS = (platform.system() == "Darwin")
 
@@ -54,7 +54,7 @@ class MyGui:
         if self.update_delay < 0:
             self.window.set_on_tick_event(self.on_main_window_tick_event)
 
-        self.plot_cmap = 'viridis'
+        self.plot_cmap = 'PiYG'
         self.webcam_fig = plt.figure()
         self.webcam_stream = WebcamStream(stream_id=0)  # 0 id for main camera
         self.webcam_stream.start()  # processing frames in input stream
@@ -64,7 +64,7 @@ class MyGui:
             self.window.renderer)
         self.scene_widget.scene.set_background([1.0, 1.0, 1.0, 1.0])
         self.window.add_child(self.scene_widget)
-        self.scene_widget.scene.show_axes(True)
+        self.scene_widget.scene.show_axes(False)
         self.scene_widget.scene.show_ground_plane(
             True, o3d.visualization.rendering.Scene.GroundPlane.XY)
 
@@ -76,7 +76,7 @@ class MyGui:
         self.pcd_material = o3d.visualization.rendering.MaterialRecord()
         self.pcd_material.shader = 'defaultUnlit'
         self.pcd_material.point_size = 2.0
-        self.pcd_material.base_color = [0.0, 0.0, 1.0, 1.0]
+        # self.pcd_material.base_color = [0.5, 0.5, 0.5, 1.0]
 
         self.scene_widget.scene.add_geometry(
             self.pcd_name, self.geom_pcd, self.pcd_material)
@@ -532,13 +532,14 @@ class MyGui:
         divider = make_axes_locatable(ax)
         cax = divider.append_axes("right", size="5%", pad=0.05)
 
-        plt.colorbar(pos, cax=cax)
+        cbar = plt.colorbar(pos, cax=cax)
+        cbar.set_ticks([])
 
         # Remove axis labels
         ax.axis('off')
 
         buf = BytesIO()
-        plt.savefig(buf, format='png')
+        plt.savefig(buf, format='png', bbox_inches='tight')
         buf.seek(0)
 
         # Convert the buffer to a numpy array
@@ -551,17 +552,46 @@ class MyGui:
 
         plot_image_cv2 = cv2.imdecode(plot_image, cv2.IMREAD_UNCHANGED)
         plot_image_cv2 = cv2.cvtColor(plot_image_cv2, cv2.COLOR_BGR2RGB)
+        # Replace white pixels with transparent pixels
+        plot_image_cv2[np.all(
+            plot_image_cv2 == [0, 0, 0], axis=-1)] = [255*self.webcam_panel.background_color.red,
+                                                      255*self.webcam_panel.background_color.green,
+                                                      255*self.webcam_panel.background_color.blue]
+
+        # Add Axes
+        x_axis = o3d.geometry.LineSet()
+        x_axis.points = o3d.utility.Vector3dVector(
+            np.array([[-1000, 0, 0], [1000, 0, 0], [0, -1000, 0], [0, 1000, 0]]))
+        x_axis.lines = o3d.utility.Vector2iVector(np.array([[0, 1], [2, 3]]))
+        x_axis.colors = o3d.utility.Vector3dVector(
+            np.array([[1, 0, 0], [0, 1, 0]]))
+        self.scene_widget.scene.remove_geometry("x-axis")
+        self.scene_widget.scene.add_geometry(
+            "x-axis", x_axis, o3d.visualization.rendering.MaterialRecord())
+
+        # axes = o3d.geometry.TriangleMesh.create_coordinate_frame(size=10)
+        # self.scene_widget.scene.remove_geometry("axes")
+        # self.scene_widget.scene.add_geometry(
+        #     "axes", axes, o3d.visualization.rendering.MaterialRecord())
 
         # Convert to o3d Image
         image_o3d = o3d.geometry.Image(plot_image_cv2)
         self.webcam_image.update_image(image_o3d)
         self.geom_pcd = self.webcam_stream.read_point_cloud()
-        self.geom_pcd.paint_uniform_color([84/255, 184/255, 240/255])
+        self.geom_pcd.scale(100.0, center=np.array([0, 0, 0]))
+        # self.geom_pcd.paint_uniform_color([84/255, 184/255, 240/255])
 
         self.scene_widget.enable_scene_caching(False)
         self.scene_widget.scene.remove_geometry(self.pcd_name)
         self.scene_widget.scene.add_geometry(
             self.pcd_name, self.geom_pcd, self.pcd_material)
+
+        camera = self.webcam_stream.read_camera()
+        camera.scale(100.0, center=np.array([0, 0, 0]))
+
+        self.scene_widget.scene.remove_geometry("camera")
+        self.scene_widget.scene.add_geometry(
+            "camera", camera, self.pcd_material)
         return True
 
     def startThread(self):
@@ -600,9 +630,11 @@ class MyGui:
         r = self.window.content_rect
         self.scene_widget.frame = r
         width = 30 * layout_context.theme.font_size
+        height = self.webcam_panel.calc_preferred_size(
+            layout_context, gui.Widget.Constraints()).height
 
         panel_width = width
-        panel_height = width
+        panel_height = height
 
         self.webcam_panel.frame = o3d.visualization.gui.Rect(
             em, 2*em, panel_width, panel_height)
