@@ -38,11 +38,14 @@ class WebcamStream(Node):
             Image, "/camera/camera/depth/camera_info", self.depth_intrinsic_callback, 10)
         # self.depth_image_sub = self.create_subscription(
         # Image, "/camera/camera/depth/image_rect_raw", self.depth_image_callback, 10)
+
+        self.depth_trunc = 1.0
+
         depth_image_sub = message_filters.Subscriber(self,
                                                      Image, "/camera/camera/depth/image_rect_raw")
         rgb_image_sub = message_filters.Subscriber(self,
                                                    Image, "/camera/camera/color/image_rect_raw")
-        ts = Tf2MessageFilter(self, [depth_image_sub, rgb_image_sub], 'world',
+        ts = Tf2MessageFilter(self, [depth_image_sub, rgb_image_sub], 'part_frame',
                               'camera_depth_optical_frame', queue_size=1000)
         ts.registerCallback(self.depth_image_callback)
 
@@ -83,14 +86,17 @@ class WebcamStream(Node):
         rgb_image = self.bridge.imgmsg_to_cv2(
             rgb_msg, desired_encoding="passthrough")
         # Set all pixels in image above 1000 to 0
-        depth_image_cm = depth_image / 1.0
-        depth_image_cm[depth_image_cm > 0.3] = 0
+        depth_image_m = depth_image / 1.0
+        # depth_image_m[depth_image_m > self.depth_trunc] = 0
         # Apply gaussian blur to depth image
         # depth_image_cm = cv2.GaussianBlur(
         # depth_image_cm, (7, 7), 0, 0, cv2.BORDER_DEFAULT)
-        self.depth_image = depth_image_cm
+
+        self.depth_image = depth_image_m
+        self.rgb_image = rgb_image
+
         rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(
-            o3d.geometry.Image(rgb_image), o3d.geometry.Image(depth_image_cm), depth_scale=1.0, depth_trunc=250.0, convert_rgb_to_intensity=False)
+            o3d.geometry.Image(rgb_image), o3d.geometry.Image(depth_image_m), depth_scale=1.0, depth_trunc=self.depth_trunc, convert_rgb_to_intensity=False)
 
         trans = tf_msg.transform.translation
         quat = tf_msg.transform.rotation
@@ -106,6 +112,7 @@ class WebcamStream(Node):
 
         self.camera = o3d.geometry.LineSet().create_camera_visualization(
             self.depth_intrinsic, extrinsic=np.eye(4))
+        self.camera.scale(self.depth_trunc, center=np.array([0, 0, 0]))
         # self.geom_pcd = o3d.geometry.PointCloud().create_from_depth_image(o3d.geometry.Image(depth_image_cm),
         #   intrinsic=self.depth_intrinsic, extrinsic=np.eye(4), depth_scale=1.0)  # , depth_trunc=250.0)
         self.geom_pcd = o3d.geometry.PointCloud().create_from_rgbd_image(

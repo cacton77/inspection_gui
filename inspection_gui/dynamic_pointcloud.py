@@ -45,7 +45,7 @@ class MyGui:
         self.is_done = False
         self.lock = threading.Lock()
 
-        self.app = o3d.visualization.gui.Application.instance
+        self.app = gui.Application.instance
         self.window = self.app.create_window(
             "Open3D Python App", width=1024, height=728, x=0, y=30)
 
@@ -54,15 +54,22 @@ class MyGui:
         if self.update_delay < 0:
             self.window.set_on_tick_event(self.on_main_window_tick_event)
 
-        self.plot_cmap = 'PiYG'
+        ###############################
+
+        self.depth_trunc = 1.0
+
+        ###############################
+
+        self.plot_cmap = 'gnuplot2'
         self.webcam_fig = plt.figure()
         self.webcam_stream = WebcamStream(stream_id=0)  # 0 id for main camera
         self.webcam_stream.start()  # processing frames in input stream
 
-        self.scene_widget = o3d.visualization.gui.SceneWidget()
+        self.scene_widget = gui.SceneWidget()
         self.scene_widget.scene = o3d.visualization.rendering.Open3DScene(
             self.window.renderer)
-        self.scene_widget.scene.set_background([1.0, 1.0, 1.0, 1.0])
+        self.scene_widget.scene.set_background([0.0, 0.0, 0.0, 1.0])
+
         self.window.add_child(self.scene_widget)
         self.scene_widget.scene.show_axes(False)
         self.scene_widget.scene.show_ground_plane(
@@ -75,7 +82,7 @@ class MyGui:
         self.pcd_name = "Point Cloud"
         self.pcd_material = o3d.visualization.rendering.MaterialRecord()
         self.pcd_material.shader = 'defaultUnlit'
-        self.pcd_material.point_size = 2.0
+        self.pcd_material.point_size = 3.0
         # self.pcd_material.base_color = [0.5, 0.5, 0.5, 1.0]
 
         self.scene_widget.scene.add_geometry(
@@ -86,43 +93,113 @@ class MyGui:
 
         # Add panel to display webcam stream
         em = self.window.theme.font_size
-        self.webcam_panel = o3d.visualization.gui.Vert(0, o3d.visualization.gui.Margins(
+        self.webcam_panel = gui.Vert(0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
-        self.webcam_panel.background_color = o3d.visualization.gui.Color(
-            0.8, 0.8, 0.8, 0.8)
-        webcam_vert = o3d.visualization.gui.CollapsableVert(
-            "Webcam Viewer", 0.25 * em, )
+        self.webcam_panel.background_color = gui.Color(
+            18/255, 18/255, 18/255, 0.8)
+        webcam_vert = gui.CollapsableVert(
+            "RGBD Viewer", 0.25 * em, )
+
+        grid = gui.VGrid(1, 0.25 * em)
+
         # Add image widget to webcam panel
-        self.webcam_image = o3d.visualization.gui.ImageWidget()
-        webcam_vert.add_child(self.webcam_image)
+        self.webcam_image = gui.ImageWidget()
+        # webcam_vert.add_child(self.webcam_image)
+        # grid.add_child(self.webcam_image)
+        tabs = gui.TabControl()
+        tabs.add_tab("RGB", self.webcam_image)
+        tabs.add_tab("Depth", self.webcam_image)
+        tabs.add_tab("Illuminance", self.webcam_image)
+        tabs.add_child(gui.TabControl())
+        grid.add_child(tabs)
+
+        # DEPTH TRUNC EDIT
+
+        def on_depth_trunc_changed(value):
+            self.depth_trunc = value
+            self.webcam_stream.depth_trunc = self.depth_trunc
+
+        depth_trunc_edit = gui.Slider(gui.Slider.DOUBLE)
+        depth_trunc_edit.set_limits(0.01, 1)
+        depth_trunc_edit.double_value = self.depth_trunc
+        depth_trunc_edit.background_color = gui.Color(0, 0, 0, 0.8)
+        depth_trunc_edit.set_on_value_changed(on_depth_trunc_changed)
+        grid.add_child(depth_trunc_edit)
+
         # Add 5 buttons horizontally to webcam vert
         # Create horizontal layout
-        webcam_horiz = o3d.visualization.gui.Horiz()
-        play_button = o3d.visualization.gui.Button('⏵')
-        play_button.background_color = o3d.visualization.gui.Color(
-            0.0, 0.8, 0.0, 1.0)
-        webcam_horiz.add_child(play_button)
-        record_button = o3d.visualization.gui.Button('⏵')
-        record_button.background_color = o3d.visualization.gui.Color(
-            0.8, 0.0, 0.0, 1.0)
-        webcam_horiz.add_child(record_button)
-        back_button = o3d.visualization.gui.Button('⏵')
-        back_button.background_color = o3d.visualization.gui.Color(
+
+        grid2 = gui.VGrid(3, 0.25 * em)
+        empty = gui.Horiz()
+        empty.add_stretch()
+        grid2.add_child(gui.Label("Controls"))
+        webcam_horiz = gui.Horiz()
+
+        skip_back_button = gui.Button('<|')
+        skip_back_button.background_color = gui.Color(
+            0.5, 0.5, 0.5, 1.0)
+        webcam_horiz.add_child(skip_back_button)
+
+        back_button = gui.Button('<')
+        back_button.background_color = gui.Color(
             0.5, 0.5, 0.5, 1.0)
         webcam_horiz.add_child(back_button)
-        pause_button = o3d.visualization.gui.Button('⏵')
-        pause_button.background_color = o3d.visualization.gui.Color(
-            0.5, 0.5, 0.5, 1.0)
-        webcam_horiz.add_child(pause_button)
-        forward_button = o3d.visualization.gui.Button('⏵')
-        forward_button.background_color = o3d.visualization.gui.Color(
+
+        play_button = gui.Button('P')
+        play_button.background_color = gui.Color(
+            0.0, 0.8, 0.0, 1.0)
+        webcam_horiz.add_child(play_button)
+
+        record_button = gui.Button('O')
+        record_button.background_color = gui.Color(
+            0.8, 0.0, 0.0, 1.0)
+        webcam_horiz.add_child(record_button)
+
+        forward_button = gui.Button('>')
+        forward_button.background_color = gui.Color(
             0.5, 0.5, 0.5, 1.0)
         webcam_horiz.add_child(forward_button)
-        webcam_vert.add_child(webcam_horiz)
+
+        skip_forward_button = gui.Button('|>')
+        skip_forward_button.background_color = gui.Color(
+            0.5, 0.5, 0.5, 1.0)
+        webcam_horiz.add_child(skip_forward_button)
+
+        grid2.add_child(webcam_horiz)
+
+        buffer_text = gui.TextEdit()
+        buffer_text.enabled = False
+        buffer_text.text_value = "0/1000"
+        grid2.add_child(buffer_text)
+        # webcam_horiz.add_child(buffer_text)
+
+        self.ros_log_panel = gui.CollapsableVert("ROS Log", 0, gui.Margins(
+            0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+        self.ros_log_panel.background_color = gui.Color(
+            0/255, 0/255, 0/255, 0.8)
+        ros_log_vert = gui.ScrollableVert(
+            0.25 * em)
+        ros_log_text = gui.ListView()
+        ros_log_text.background_color = gui.Color(0, 0, 0, 0.8)
+        ros_log_text.enabled = False
+        log_list = []
+        for i in range(1000):
+            log_list.append(f"Log {i}")
+        ros_log_text.set_items(log_list)
+        ros_log_text.selected_index = len(log_list) - 1
+        # ros_log_vert.add_child(ros_log_text)
+        # self.ros_log_panel.add_child(ros_log_vert)
+        self.ros_log_panel.add_child(ros_log_text)
+
+        # webcam_vert.add_child(webcam_horiz)
+        # grid.add_child(webcam_horiz)
+        grid.add_child(grid2)
+        webcam_vert.add_child(grid)
         self.webcam_panel.add_child(webcam_vert)
 
         self.window.set_on_layout(self._on_layout)
         self.window.add_child(self.webcam_panel)
+        self.window.add_child(self.ros_log_panel)
 
         # ---- Menu ----
         # The menu is global (because the macOS menu is global), so only create
@@ -311,9 +388,13 @@ class MyGui:
 
     def _on_import_dialog_done(self, path):
         self.model = o3d.io.read_triangle_mesh(path)
+        voxel_grid = o3d.geometry.VoxelGrid.create_from_triangle_mesh(
+            self.model, 0.1)
         self.scene_widget.scene.clear_geometry()
         self.scene_widget.scene.add_geometry(
             self.model_name, self.model, self.model_material)
+        self.scene_widget.scene.add_geometry(
+            "voxel_grid", voxel_grid, self.model_material)
         self.window.close_dialog()
 
     def _on_menu_quit(self):
@@ -358,7 +439,7 @@ class MyGui:
         cmap_select.set_on_selection_changed(on_cmap_select)
 
         def on_panel_color_changed(c):
-            self.webcam_panel.background_color = o3d.visualization.gui.Color(
+            self.webcam_panel.background_color = gui.Color(
                 c.red, c.green, c.blue, c.alpha)
 
         panel_color_edit = gui.ColorEdit()
@@ -523,7 +604,7 @@ class MyGui:
 
     def update_point_cloud(self):
         image_cv2 = self.webcam_stream.read_depth_image()
-        image_cv2[image_cv2 > 100] = 0
+        image_cv2[image_cv2 > self.depth_trunc] = 0
         # Convert image_cv to grayscale
         # image_cv2 = cv2.cvtColor(image_cv2, cv2.COLOR_BGR2GRAY)
         ax = self.webcam_fig.add_subplot()
@@ -533,7 +614,6 @@ class MyGui:
         cax = divider.append_axes("right", size="5%", pad=0.05)
 
         cbar = plt.colorbar(pos, cax=cax)
-        cbar.set_ticks([])
 
         # Remove axis labels
         ax.axis('off')
@@ -588,6 +668,7 @@ class MyGui:
 
         camera = self.webcam_stream.read_camera()
         camera.scale(100.0, center=np.array([0, 0, 0]))
+        camera.paint_uniform_color(np.array([0/255, 255/255, 255/255]))
 
         self.scene_widget.scene.remove_geometry("camera")
         self.scene_widget.scene.add_geometry(
@@ -608,7 +689,7 @@ class MyGui:
             with self.lock:
                 if self.is_done:  # might have changed while sleeping.
                     break
-                o3d.visualization.gui.Application.instance.post_to_main_thread(
+                gui.Application.instance.post_to_main_thread(
                     self.window, self.update_point_cloud)
 
     def on_main_window_closing(self):
@@ -636,14 +717,29 @@ class MyGui:
         panel_width = width
         panel_height = height
 
-        self.webcam_panel.frame = o3d.visualization.gui.Rect(
+        self.webcam_panel.frame = gui.Rect(
             em, 2*em, panel_width, panel_height)
+
+        max_width = r.width - 2*em
+        max_height = 10 * em
+        height = min(self.ros_log_panel.calc_preferred_size(
+            layout_context, gui.Widget.Constraints()).height, max_height)
+        if height == max_height:
+            width = max_width
+        else:
+            width = self.ros_log_panel.calc_preferred_size(
+                layout_context, gui.Widget.Constraints()).width
+
+        panel_width = width
+        panel_height = height
+        self.ros_log_panel.frame = gui.Rect(
+            em, r.height - panel_height, panel_width, panel_height)
 
 
 def main():
     rclpy.init()
 
-    o3d.visualization.gui.Application.instance.initialize()
+    gui.Application.instance.initialize()
 
     thread_delay = 0.1
     use_tick = -1
@@ -651,7 +747,7 @@ def main():
     dpcApp = MyGui(use_tick)
     dpcApp.startThread()
 
-    o3d.visualization.gui.Application.instance.run()
+    gui.Application.instance.run()
 
     rclpy.shutdown()
 
