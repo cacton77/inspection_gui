@@ -47,7 +47,7 @@ class MyGui:
 
         self.app = gui.Application.instance
         self.window = self.app.create_window(
-            "Open3D Python App", width=1024, height=728, x=0, y=30)
+            "Inspection Vizard", width=1024, height=728, x=0, y=30)
 
         w = self.window
         self.window.set_on_close(self.on_main_window_closing)
@@ -97,23 +97,24 @@ class MyGui:
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
         self.webcam_panel.background_color = gui.Color(
             18/255, 18/255, 18/255, 0.8)
-        webcam_vert = gui.CollapsableVert(
-            "RGBD Viewer", 0.25 * em, )
 
         grid = gui.VGrid(1, 0.25 * em)
 
         # Add image widget to webcam panel
-        self.webcam_image = gui.ImageWidget()
-        # webcam_vert.add_child(self.webcam_image)
-        # grid.add_child(self.webcam_image)
-        tabs = gui.TabControl()
-        tabs.add_tab("RGB", self.webcam_image)
-        tabs.add_tab("Depth", self.webcam_image)
-        tabs.add_tab("Illuminance", self.webcam_image)
-        tabs.add_child(gui.TabControl())
-        grid.add_child(tabs)
+        rgb_grid = gui.VGrid(1, 0.25 * em)
+        depth_grid = gui.VGrid(1, 0.25 * em)
+        illuminance_grid = gui.VGrid(1, 0.25 * em)
 
-        # DEPTH TRUNC EDIT
+        self.illuminance_image = gui.ImageWidget()
+
+        # RGB TAB ################################################################
+
+        self.rgb_image = gui.ImageWidget()
+        rgb_grid.add_child(self.rgb_image)
+
+        # DEPTH TAB ################################################################
+
+        self.depth_image = gui.ImageWidget()
 
         def on_depth_trunc_changed(value):
             self.depth_trunc = value
@@ -124,7 +125,6 @@ class MyGui:
         depth_trunc_edit.double_value = self.depth_trunc
         depth_trunc_edit.background_color = gui.Color(0, 0, 0, 0.8)
         depth_trunc_edit.set_on_value_changed(on_depth_trunc_changed)
-        grid.add_child(depth_trunc_edit)
 
         # Add 5 buttons horizontally to webcam vert
         # Create horizontal layout
@@ -173,29 +173,39 @@ class MyGui:
         grid2.add_child(buffer_text)
         # webcam_horiz.add_child(buffer_text)
 
-        self.ros_log_panel = gui.CollapsableVert("ROS Log", 0, gui.Margins(
+        depth_grid.add_child(self.depth_image)
+        depth_grid.add_child(depth_trunc_edit)
+        depth_grid.add_child(grid2)
+
+        # ILLUMINANCE TAB ################################################################
+
+        tabs = gui.TabControl()
+        tabs.add_tab("RGB", rgb_grid)
+        tabs.add_tab("Depth", depth_grid)
+        tabs.add_tab("Illuminance", illuminance_grid)
+        tabs.add_child(gui.TabControl())
+        grid.add_child(tabs)
+
+        self.ros_log_panel = gui.CollapsableVert("Log", 0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
         self.ros_log_panel.background_color = gui.Color(
             0/255, 0/255, 0/255, 0.8)
         ros_log_vert = gui.ScrollableVert(
             0.25 * em)
-        ros_log_text = gui.ListView()
-        ros_log_text.background_color = gui.Color(0, 0, 0, 0.8)
-        ros_log_text.enabled = False
-        log_list = []
-        for i in range(1000):
-            log_list.append(f"Log {i}")
-        ros_log_text.set_items(log_list)
-        ros_log_text.selected_index = len(log_list) - 1
-        # ros_log_vert.add_child(ros_log_text)
+        self.ros_log_text = gui.ListView()
+        self.ros_log_text.background_color = gui.Color(0, 0, 0, 0.8)
+        self.ros_log_text.enabled = False
+        self.log_list = ["Log 1"]
+        self.ros_log_text.set_items(self.log_list)
+        self.ros_log_text.selected_index = 0
+        # ros_log_vert.add_child(self.ros_log_text)
         # self.ros_log_panel.add_child(ros_log_vert)
-        self.ros_log_panel.add_child(ros_log_text)
+        self.ros_log_panel.add_child(self.ros_log_text)
 
         # webcam_vert.add_child(webcam_horiz)
         # grid.add_child(webcam_horiz)
-        grid.add_child(grid2)
-        webcam_vert.add_child(grid)
-        self.webcam_panel.add_child(webcam_vert)
+        self.webcam_panel.add_child(grid)
+        # self.webcam_panel.add_child(webcam_vert)
 
         self.window.set_on_layout(self._on_layout)
         self.window.add_child(self.webcam_panel)
@@ -603,12 +613,19 @@ class MyGui:
         return new_pcd
 
     def update_point_cloud(self):
-        image_cv2 = self.webcam_stream.read_depth_image()
-        image_cv2[image_cv2 > self.depth_trunc] = 0
+
+        # TODO: Add switch cases to toggle between RGB, Depth, and Illuminance
+        rgb_image_cv2 = self.webcam_stream.read_rgb_image()
+        rgb_image_o3d = o3d.geometry.Image(rgb_image_cv2)
+        self.rgb_image.update_image(rgb_image_o3d)
+
+        depth_image_cv2 = self.webcam_stream.read_depth_image()
+        depth_image_cv2[depth_image_cv2 > self.depth_trunc] = 0
         # Convert image_cv to grayscale
-        # image_cv2 = cv2.cvtColor(image_cv2, cv2.COLOR_BGR2GRAY)
+        # depth_image_cv2 = cv2.cvtColor(depth_image_cv2, cv2.COLOR_BGR2GRAY)
         ax = self.webcam_fig.add_subplot()
-        pos = ax.imshow(image_cv2, cmap=self.plot_cmap, interpolation='none')
+        pos = ax.imshow(depth_image_cv2, cmap=self.plot_cmap,
+                        interpolation='none')
         # self.webcam_fig.colorbar(pos, ax=ax)
         divider = make_axes_locatable(ax)
         cax = divider.append_axes("right", size="5%", pad=0.05)
@@ -630,13 +647,14 @@ class MyGui:
         self.webcam_fig.clf()
         # ax.cla()
 
-        plot_image_cv2 = cv2.imdecode(plot_image, cv2.IMREAD_UNCHANGED)
-        plot_image_cv2 = cv2.cvtColor(plot_image_cv2, cv2.COLOR_BGR2RGB)
+        plot_depth_image_cv2 = cv2.imdecode(plot_image, cv2.IMREAD_UNCHANGED)
+        plot_depth_image_cv2 = cv2.cvtColor(
+            plot_depth_image_cv2, cv2.COLOR_BGR2RGB)
         # Replace white pixels with transparent pixels
-        plot_image_cv2[np.all(
-            plot_image_cv2 == [0, 0, 0], axis=-1)] = [255*self.webcam_panel.background_color.red,
-                                                      255*self.webcam_panel.background_color.green,
-                                                      255*self.webcam_panel.background_color.blue]
+        plot_depth_image_cv2[np.all(
+            plot_depth_image_cv2 == [0, 0, 0], axis=-1)] = [255*self.webcam_panel.background_color.red,
+                                                            255*self.webcam_panel.background_color.green,
+                                                            255*self.webcam_panel.background_color.blue]
 
         # Add Axes
         x_axis = o3d.geometry.LineSet()
@@ -655,8 +673,8 @@ class MyGui:
         #     "axes", axes, o3d.visualization.rendering.MaterialRecord())
 
         # Convert to o3d Image
-        image_o3d = o3d.geometry.Image(plot_image_cv2)
-        self.webcam_image.update_image(image_o3d)
+        image_o3d = o3d.geometry.Image(plot_depth_image_cv2)
+        self.depth_image.update_image(image_o3d)
         self.geom_pcd = self.webcam_stream.read_point_cloud()
         self.geom_pcd.scale(100.0, center=np.array([0, 0, 0]))
         # self.geom_pcd.paint_uniform_color([84/255, 184/255, 240/255])
@@ -673,6 +691,23 @@ class MyGui:
         self.scene_widget.scene.remove_geometry("camera")
         self.scene_widget.scene.add_geometry(
             "camera", camera, self.pcd_material)
+
+        light_ring = self.webcam_stream.read_light_ring()
+        light_ring.scale(100.0, center=np.array([0, 0, 0]))
+        light_ring.paint_uniform_color(np.array([255/255, 255/255, 0/255]))
+        self.scene_widget.scene.remove_geometry("light_ring")
+        self.scene_widget.scene.add_geometry(
+            "light_ring", light_ring, self.pcd_material)
+
+        # Update log
+        # Add random string to beginning of log_list
+        self.log_list.insert(0, "Log " + str(np.random.randint(1000)))
+        # Truncate log to 1000 items
+        self.log_list = self.log_list[:1000]
+
+        self.ros_log_text.set_items(self.log_list)
+        self.ros_log_text.selected_index = 0
+
         return True
 
     def startThread(self):
