@@ -40,10 +40,13 @@ class WebcamStream(Node):
         self.depth_intrinsic = o3d.camera.PinholeCameraIntrinsic(
             o3d.camera.PinholeCameraIntrinsicParameters.PrimeSenseDefault)
 
+        self.T = np.eye(4)
+
         self.annotated_rgb_image = np.zeros(
-            (480, 640, 3), dtype=np.uint16)
-        self.rgb_image = np.zeros((480, 640, 3), dtype=np.uint16)
-        self.depth_image = np.zeros((480, 640), dtype=np.uint16)
+            (480, 640, 3), dtype=np.uint8)
+        self.rgb_image = np.zeros((480, 640, 3), dtype=np.uint8)
+        self.depth_image = np.zeros((480, 640, 1), dtype=np.float32)
+        self.illuminance_image = np.zeros((480, 640, 1), dtype=np.uint8)
 
         self.depth_intrinsic_sub = self.create_subscription(
             Image, "/camera/camera/depth/camera_info", self.depth_intrinsic_callback, 10)
@@ -104,8 +107,8 @@ class WebcamStream(Node):
         rgb_image_resized = cv2.resize(
             img, dim, interpolation=cv2.INTER_AREA).astype(np.uint8)
         results = self.yolov8_seg(img.astype(np.uint8))
-        self.annotated_rgb_image = self.rgb_image
-        # self.annotated_rgb_image = results[0].plot().astype(np.uint16)
+        # self.annotated_rgb_image = self.rgb_image
+        self.annotated_rgb_image = results[0].plot().astype(np.uint8)
 
     def generate_point_cloud(self):
         new_pcd = o3d.geometry.PointCloud()
@@ -150,19 +153,14 @@ class WebcamStream(Node):
         depth_image = self.bridge.imgmsg_to_cv2(
             dmap_msg, desired_encoding="passthrough").astype(np.float32) / 1000.0
         rgb_image = self.bridge.imgmsg_to_cv2(
-            rgb_msg, desired_encoding="passthrough")
+            rgb_msg, desired_encoding="passthrough").astype(np.uint8)
+        hsv_image = cv2.cvtColor(rgb_image, cv2.COLOR_BGR2HSV).astype(np.uint8)
         # Set all pixels in image above 1000 to 0
         depth_image_m = depth_image / 1.0
         # depth_image_m[depth_image_m > self.depth_trunc] = 0
         # Apply gaussian blur to depth image
         # depth_image_cm = cv2.GaussianBlur(
         # depth_image_cm, (7, 7), 0, 0, cv2.BORDER_DEFAULT)
-
-        self.depth_image = depth_image_m
-        self.rgb_image = rgb_image
-
-        rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(
-            o3d.geometry.Image(rgb_image), o3d.geometry.Image(depth_image_m), depth_scale=1.0, depth_trunc=self.depth_trunc, convert_rgb_to_intensity=False)
 
         trans = tf_msg.transform.translation
         quat = tf_msg.transform.rotation
@@ -176,24 +174,18 @@ class WebcamStream(Node):
         T[1, 3] = trans.y
         T[2, 3] = trans.z
 
-        self.camera = o3d.geometry.LineSet().create_camera_visualization(
-            self.depth_intrinsic, extrinsic=np.eye(4))
-        self.camera.scale(self.depth_trunc, center=np.array([0, 0, 0]))
-        light_ring = o3d.geometry.TriangleMesh.create_cylinder(
-            radius=0.1, height=0.01)
-        self.light_ring = o3d.geometry.LineSet.create_from_triangle_mesh(
-            light_ring)
-        self.geom_pcd = o3d.geometry.PointCloud().create_from_rgbd_image(
-            rgbd_image, intrinsic=self.depth_intrinsic)  # , extrinsic=np.eye(4), depth_scale=1.0)
-
-        self.camera.transform(T)
-        self.geom_pcd.transform(T)
-        self.light_ring.transform(T)
+        self.depth_image = depth_image_m
+        self.rgb_image = rgb_image
+        self.T = T
+        self.illuminance_image = hsv_image[:, :, 2]
 
         # Add geom_pcd to buffer. If buffer is full, remove oldest pcd
         # self.geom_pcd_buffer.append(self.geom_pcd)
         # if len(self.geom_pcd_buffer) > self.buffer_length:
         # self.geom_pcd_buffer.pop(0)
+
+    def get_data(self):
+        return self.rgb_image, self.annotated_rgb_image, self.depth_image, self.depth_intrinsic, self.illuminance_image, self.T
 
     def read_rgb_image(self):
         return self.annotated_rgb_image
