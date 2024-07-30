@@ -7,6 +7,7 @@ import open3d as o3d
 import numpy as np
 import threading
 import time
+import json
 import matplotlib.pyplot as plt
 import message_filters
 from io import BytesIO
@@ -15,6 +16,7 @@ from ultralytics import YOLO
 
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
+from rcl_interfaces.srv import ListParameters, DescribeParameters, GetParameters, SetParameters
 
 from inspection_gui.tf2_message_filter import Tf2MessageFilter
 
@@ -24,6 +26,8 @@ class WebcamStream(Node):
     def __init__(self, stream_id=0):
         super().__init__('scanner_node')
 
+        self.log = []
+
         self.bridge = CvBridge()
 
         yolov8 = YOLO('yolov8n-seg.pt')
@@ -32,8 +36,6 @@ class WebcamStream(Node):
 
         self.stopped = True        # thread instantiation
         self.t = threading.Thread(target=self.update, args=())
-        self.t2 = threading.Thread(
-            target=self.inference_timer_callback, args=())
         self.t.daemon = True  # daemon threads run in background
 
         self.frame_id = None
@@ -81,18 +83,47 @@ class WebcamStream(Node):
 
         self.geom_pcd = self.generate_point_cloud()
 
-        # Voxel grid construction
-        self.buffer_length = 10
-        self.geom_pcd_buffer = []
-        self.voxel_size = 0.1
-        self.voxel_grid = o3d.geometry.VoxelGrid()
+        # Macro Camera
+        self.get_logger().info('Connecting to camera1 node...')
+        camera_node_name = 'camera1'
+        self.camera_node_list_parameters_cli = self.create_client(
+            ListParameters, camera_node_name + '/list_parameters')
+        while not self.camera_node_list_parameters_cli.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('service not available, waiting again...')
+        self.get_logger().info('Connected!')
 
-        # Generate an np array of green colors with length of geom_pcd.points
-        green_color = np.array([0, 1, 0])
-        # Expand array to match the length of geom_pcd.points
-        green_color = np.expand_dims(green_color, axis=0)
-        self.geom_pcd.colors = o3d.utility.Vector3dVector(
-            green_color)
+        req = ListParameters.Request()
+        self.get_logger().info('Sending list parameters request...')
+        future = self.camera_node_list_parameters_cli.call_async(req)
+        rclpy.spin_until_future_complete(self, future)
+        resp = future.result()
+        self.get_logger().info('Got parameters.')
+        param_names = []
+        for param_name in resp.result.names:
+            self.get_logger().info(param_name)
+            param_names.append(param_name)
+
+        self.camera_node_describe_parameters_cli = self.create_client(
+            DescribeParameters, camera_node_name + '/describe_parameters')
+        while not self.camera_node_describe_parameters_cli.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('service not available, waiting again...')
+        req = DescribeParameters.Request()
+        req.names = param_names
+        self.get_logger().info('Sending describe parameters request...')
+        future = self.camera_node_describe_parameters_cli.call_async(req)
+        rclpy.spin_until_future_complete(self, future)
+        resp = future.result()
+
+        self.get_logger().info(f'{camera_node_name} parameters:')
+        self.camera_params = {}
+        for param in resp.descriptors:
+            self.camera_params[param.name] = {}
+            self.camera_params[param.name]['type'] = param.type
+            self.camera_params[param.name]['description'] = param.description
+            self.camera_params[param.name]['choices'] = param.additional_constraints.split(
+                '\n')
+        pretty = json.dumps(self.camera_params, indent=4)
+        print(pretty)
 
     def inference_timer_callback(self):
         original_size = self.rgb_image.shape
@@ -124,25 +155,6 @@ class WebcamStream(Node):
 
     def update(self):
         rclpy.spin(self)
-
-    def update2(self):
-        # Combine all point clouds in buffer and compute voxel grid at 1 Hz
-        while not self.stopped:
-            t0 = time.time()
-            self.compute_voxel_grid_from_buffer()
-            t1 = time.time()
-            print("Time to compute voxel grid: ", t1 - t0)
-            time.sleep(1 - (t1 - t0))
-
-    def compute_voxel_grid_from_buffer(self):
-        # Combine all point clouds in buffer
-        combined_pcd = o3d.geometry.PointCloud()
-        if len(self.geom_pcd_buffer) > 0:
-            for pcd in self.geom_pcd_buffer:
-                combined_pcd += pcd
-        # Create a voxel grid from combined pcd
-        self.voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(
-            combined_pcd, 0.01)
 
     def depth_intrinsic_callback(self, msg):
         # Convert ROS message to Open3D camera intrinsic
@@ -179,11 +191,6 @@ class WebcamStream(Node):
         self.T = T
         self.illuminance_image = hsv_image[:, :, 2]
 
-        # Add geom_pcd to buffer. If buffer is full, remove oldest pcd
-        # self.geom_pcd_buffer.append(self.geom_pcd)
-        # if len(self.geom_pcd_buffer) > self.buffer_length:
-        # self.geom_pcd_buffer.pop(0)
-
     def get_data(self):
         return self.rgb_image, self.annotated_rgb_image, self.depth_image, self.depth_intrinsic, self.illuminance_image, self.T
 
@@ -196,14 +203,14 @@ class WebcamStream(Node):
     def read_point_cloud(self):
         return self.geom_pcd
 
-    def read_voxel_grid(self):
-        return self.voxel_grid
-
     def read_camera(self):
         return self.camera
 
     def read_light_ring(self):
         return self.light_ring
+
+    def read_log(self):
+        return self.log
 
     # method to stop reading frames
     def stop(self):

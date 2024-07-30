@@ -719,8 +719,9 @@ class MyGui:
             "light_ring", light_ring, self.pcd_material)
 
         # Update log
-        self.log_list.insert(0, "Log " + str(np.random.randint(1000)))
-        self.log_list = self.log_list[:1000]
+        self.log_list = self.webcam_stream.read_log()
+        # self.log_list.insert(0, "Log " + str(np.random.randint(1000)))
+        # self.log_list = self.log_list[:1000]
 
         self.ros_log_text.set_items(self.log_list)
         self.ros_log_text.selected_index = 0
