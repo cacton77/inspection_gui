@@ -47,12 +47,14 @@ class MyGui:
 
         self.app = gui.Application.instance
         self.window = self.app.create_window(
-            "Inspection Vizard", width=1024, height=728, x=0, y=30)
+            "Inspection Viz-I-Vizard", width=1024, height=728, x=0, y=30)
 
         w = self.window
         self.window.set_on_close(self.on_main_window_closing)
         if self.update_delay < 0:
             self.window.set_on_tick_event(self.on_main_window_tick_event)
+
+        em = self.window.theme.font_size
 
         ###############################
 
@@ -65,12 +67,16 @@ class MyGui:
         self.webcam_stream = WebcamStream(stream_id=0)  # 0 id for main camera
         self.webcam_stream.start()  # processing frames in input stream
 
+        self.main_tabs = gui.TabControl()
+
+        # SCANNER TAB ################################################################
+
         self.scene_widget = gui.SceneWidget()
         self.scene_widget.scene = o3d.visualization.rendering.Open3DScene(
             self.window.renderer)
         self.scene_widget.scene.set_background([0.0, 0.0, 0.0, 1.0])
 
-        self.window.add_child(self.scene_widget)
+        # self.window.add_child(self.scene_widget)
         self.scene_widget.scene.show_axes(False)
         self.scene_widget.scene.show_ground_plane(
             True, o3d.visualization.rendering.Scene.GroundPlane.XY)
@@ -83,7 +89,6 @@ class MyGui:
         self.pcd_material = o3d.visualization.rendering.MaterialRecord()
         self.pcd_material.shader = 'defaultUnlit'
         self.pcd_material.point_size = 3.0
-        # self.pcd_material.base_color = [0.5, 0.5, 0.5, 1.0]
 
         self.scene_widget.scene.add_geometry(
             self.pcd_name, self.geom_pcd, self.pcd_material)
@@ -92,7 +97,7 @@ class MyGui:
             60, self.scene_widget.scene.bounding_box, [0, 0, 0])
 
         # Add panel to display webcam stream
-        em = self.window.theme.font_size
+
         self.webcam_panel = gui.Vert(0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
         self.webcam_panel.background_color = gui.Color(
@@ -189,6 +194,10 @@ class MyGui:
         tabs.add_child(gui.TabControl())
         grid.add_child(tabs)
 
+        self.webcam_panel.add_child(grid)
+
+        # LOG PANEL ################################################################
+
         self.ros_log_panel = gui.CollapsableVert("Log", 0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
         self.ros_log_panel.background_color = gui.Color(
@@ -207,9 +216,43 @@ class MyGui:
 
         # webcam_vert.add_child(webcam_horiz)
         # grid.add_child(webcam_horiz)
-        self.webcam_panel.add_child(grid)
         # self.webcam_panel.add_child(webcam_vert)
 
+        self.scene_widget.add_child(self.webcam_panel)
+
+        # MONITOR TAB ################################################################
+
+        self.monitor_widget = gui.Horiz()
+        self.monitor_image_widget = gui.ImageWidget()
+        self.monitor_image_widget.update_image(o3d.geometry.Image(
+            np.zeros((480, 640, 3), dtype=np.uint8)))
+        self.monitor_image_widget.enabled = False
+
+        self.camera_config_panel = gui.Vert(0, gui.Margins(
+            0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+        self.camera_config_panel.background_color = gui.Color(
+            0/255, 0/255, 0/255, 1.0)
+
+        svert = gui.ScrollableVert(0.25 * em)
+        grid = gui.VGrid(1, 0.25 * em)
+
+        camera_params = self.webcam_stream.read_camera_params()
+
+        # Loop through camera_params and add widgets to grid
+        for key, value in camera_params.items():
+            grid.add_child(gui.Label(key))
+
+        svert.add_child(grid)
+
+        self.camera_config_panel.add_child(svert)
+        # self.monitor_image_widget.add_child(self.camera_config_panel)
+        self.monitor_widget.add_child(self.camera_config_panel)
+        self.monitor_widget.add_child(self.monitor_image_widget)
+
+        self.main_tabs.add_tab("Scanner Scene", self.scene_widget)
+        self.main_tabs.add_tab("Monitor", self.monitor_widget)
+
+        self.window.add_child(self.main_tabs)
         self.window.set_on_layout(self._on_layout)
         self.window.add_child(self.webcam_panel)
         self.window.add_child(self.ros_log_panel)
@@ -617,8 +660,6 @@ class MyGui:
 
     def update_point_cloud(self):
         rgb_image, annotated_rgb_image, depth_image, depth_intrinsic, illuminance_image, T = self.webcam_stream.get_data()
-        print(
-            f'Illuminance Image: {illuminance_image.shape}, data type: {illuminance_image.dtype}')
 
         rgb_image_o3d = o3d.geometry.Image(rgb_image)
         annotated_rgb_image_o3d = o3d.geometry.Image(annotated_rgb_image)
@@ -718,6 +759,10 @@ class MyGui:
         self.scene_widget.scene.add_geometry(
             "light_ring", light_ring, self.pcd_material)
 
+        # MONITOR TAB ############################################################
+
+        self.monitor_image_widget.update_image(annotated_rgb_image_o3d)
+
         # Update log
         self.log_list = self.webcam_stream.read_log()
         # self.log_list.insert(0, "Log " + str(np.random.randint(1000)))
@@ -762,7 +807,9 @@ class MyGui:
         em = self.window.theme.font_size
 
         r = self.window.content_rect
+        self.main_tabs.frame = r
         self.scene_widget.frame = r
+        self.monitor_widget.frame = r
         width = 30 * layout_context.theme.font_size
         height = self.webcam_panel.calc_preferred_size(
             layout_context, gui.Widget.Constraints()).height
@@ -771,9 +818,11 @@ class MyGui:
         panel_height = height
 
         self.webcam_panel.frame = gui.Rect(
-            em, 2*em, panel_width, panel_height)
+            0.5*em, 3*em, panel_width, panel_height)
+        self.camera_config_panel.frame = gui.Rect(
+            0.5*em, 3*em, panel_width, 1000)
 
-        max_width = r.width - 2*em
+        max_width = r.width - 1.5*em
         max_height = 10 * em
         height = min(self.ros_log_panel.calc_preferred_size(
             layout_context, gui.Widget.Constraints()).height, max_height)
@@ -786,7 +835,7 @@ class MyGui:
         panel_width = width
         panel_height = height
         self.ros_log_panel.frame = gui.Rect(
-            em, r.height - panel_height, panel_width, panel_height)
+            0.5*em, r.height - panel_height, panel_width, panel_height)
 
 
 def main():

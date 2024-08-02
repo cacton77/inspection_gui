@@ -67,7 +67,7 @@ class WebcamStream(Node):
 
         # Inference
 
-        inference_timer_period = 0.1
+        inference_timer_period = 0.05
         self.inference_timer = self.create_timer(
             inference_timer_period, self.inference_timer_callback)
 
@@ -205,6 +205,9 @@ class WebcamStream(Node):
 
     def read_camera(self):
         return self.camera
+
+    def read_camera_params(self):
+        return self.camera_params
 
     def read_light_ring(self):
         return self.light_ring
