@@ -16,6 +16,7 @@ from ultralytics import YOLO
 
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
+from rcl_interfaces.msg import Parameter
 from rcl_interfaces.srv import ListParameters, DescribeParameters, GetParameters, SetParameters
 
 from inspection_gui.tf2_message_filter import Tf2MessageFilter
@@ -31,8 +32,9 @@ class WebcamStream(Node):
         self.bridge = CvBridge()
 
         yolov8 = YOLO('yolov8n-seg.pt')
-        yolov8.export(format='openvino')
-        self.yolov8_seg = YOLO("yolov8n-seg_openvino_model/")
+        self.yolov8_seg = yolov8
+        # yolov8.export(format='openvino')
+        # self.yolov8_seg = YOLO("yolov8n-seg_openvino_model/")
 
         self.stopped = True        # thread instantiation
         self.t = threading.Thread(target=self.update, args=())
@@ -106,7 +108,6 @@ class WebcamStream(Node):
         self.get_logger().info('Got parameters.')
         param_names = []
         for param_name in resp.result.names:
-            self.get_logger().info(param_name)
             param_names.append(param_name)
 
         self.camera_node_describe_parameters_cli = self.create_client(
@@ -120,7 +121,6 @@ class WebcamStream(Node):
         rclpy.spin_until_future_complete(self, future)
         resp = future.result()
 
-        self.get_logger().info(f'{camera_node_name} parameters:')
         self.camera_params = {}
         for param in resp.descriptors:
             self.camera_params[param.name] = {}
@@ -144,6 +144,7 @@ class WebcamStream(Node):
         for i in range(len(param_names)):
             print(rclpy.parameter.Parameter.Type.BOOL)
             if resp.values[i].type == rclpy.Parameter.Type.BOOL:
+                print(f'{param_names[i]}: {resp.values[i].bool_value}')
                 self.camera_params[param_names[i]
                                    ]['value'] = resp.values[i].bool_value
             elif resp.values[i].type == rclpy.Parameter.Type.BOOL_ARRAY:
@@ -170,6 +171,51 @@ class WebcamStream(Node):
             elif resp.values[i].type == rclpy.Parameter.Type.STRING_ARRAY:
                 self.camera_params[param_names[i]
                                    ]['value'] = resp.values[i].string_array_value
+
+        # Set Parameters Client
+        self.camera_node_set_parameters_cli = self.create_client(
+            SetParameters, 'camera1/set_parameters')
+        while not self.camera_node_set_parameters_cli.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('service not available, waiting again...')
+
+    def set_camera_params(self):
+
+        req = SetParameters.Request()
+        req.parameters = []
+
+        # Loop through items in self.camera_params and append to request
+        for name in self.camera_params:
+
+            type = self.camera_params[name]['type']
+            parameter = Parameter()
+            parameter.name = name
+
+            if type == rclpy.Parameter.Type.BOOL:
+                parameter.value.bool_value = self.camera_params[name]['value']
+            elif type == rclpy.Parameter.Type.BOOL_ARRAY:
+                parameter.value.bool_array_value = self.camera_params[name]['value']
+            elif type == rclpy.Parameter.Type.BYTE_ARRAY:
+                parameter.value.byte_array_value = self.camera_params[name]['value']
+            elif type == rclpy.Parameter.Type.DOUBLE:
+                parameter.value.double_value = self.camera_params[name]['value']
+            elif type == rclpy.Parameter.Type.DOUBLE_ARRAY:
+                parameter.value.double_array_value = self.camera_params[name]['value']
+            elif type == rclpy.Parameter.Type.INTEGER:
+                parameter.value.integer_value = self.camera_params[name]['value']
+            elif type == rclpy.Parameter.Type.INTEGER_ARRAY:
+                parameter.value.integer_array_value = self.camera_params[name]['value']
+            elif type == rclpy.Parameter.Type.STRING:
+                parameter.value.string_value = self.camera_params[name]['value']
+            elif type == rclpy.Parameter.Type.STRING_ARRAY:
+                parameter.value.string_array_value = self.camera_params[name]['value']
+
+            req.parameters.append(parameter)
+
+        self.get_logger().info('Sending set parameters request...')
+        future = self.camera_node_set_parameters_cli.call_async(req)
+        rclpy.spin_until_future_complete(self, future)
+        resp = future.result()
+        self.get_logger().info('Parameters set!')
 
     def inference_timer_callback(self):
         original_size = self.rgb_image.shape

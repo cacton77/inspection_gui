@@ -240,59 +240,66 @@ class MyGui:
         self.camera_config_panel.background_color = gui.Color(
             0/255, 0/255, 0/255, 1.0)
 
+        cvert = gui.CollapsableVert("Camera Configuration")
         svert = gui.ScrollableVert(0.25 * em)
-        grid = gui.VGrid(2, 0.25 * em)
+        # grid = gui.VGrid(2, 0.25 * em)
 
         camera_params = self.webcam_stream.read_camera_params()
-        print(camera_params)
+
+        def on_camera_param_changed(value):
+            self.webcam_stream.set_camera_params()
+
+        # Order the camera parameters
+
+        param_names_ordered = camera_params.keys()
 
         # Loop through camera_params and add widgets to grid
-        for key, value in camera_params.items():
-            grid.add_child(gui.Label(key))
-            print(key)
-            print(value['type'])
-            print(value['choices'])
-            if value['type'] == 2:
+        for name in param_names_ordered:
+            description = camera_params[name]
+            grid = gui.Horiz(0, gui.Margins(
+                0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+            grid.add_child(gui.Label(f'{name}: '))
+
+            if description['type'] == 2:
                 edit = gui.NumberEdit(gui.NumberEdit.INT)
-                edit.int_value = value['value']
-                if value['read_only']:
-                    edit.enabled = False
-                grid.add_child(edit)
-            elif value['type'] == rclpy.Parameter.Type.DOUBLE:
+                edit.int_value = int(description['value'])
+
+            elif description['type'] == 3:
                 edit = gui.TextEdit()
-                edit.double_value = value['value']
-                if value['read_only']:
-                    edit.enabled = False
-                grid.add_child(edit)
-            elif value['type'] == rclpy.Parameter.Type.BOOL:
-                edit = gui.Checkbox()
-                edit.checked = value['value']
-                if value['read_only']:
-                    edit.enabled = False
-                grid.add_child(edit)
-            elif value['type'] == 4:
-                print(type(value['choices']))
-                if len(value['choices']) > 1:
+                # edit.double_value = float(description['value'])
+
+            elif description['type'] == 1:
+                print(description)
+                edit = gui.Checkbox(name)
+                # edit.checked = description['value']
+
+            elif description['type'] == 4:
+                if len(description['choices']) > 1:
                     edit = gui.Combobox()
-                    for choice in value['choices']:
+                    for choice in description['choices']:
                         edit.add_item(choice)
                 else:
                     edit = gui.TextEdit()
-                    edit.text_value = value['value']
-                if value['read_only']:
-                    edit.enabled = False
-                grid.add_child(edit)
+                    edit.text_value = description['value']
             else:
                 grid.add_child(gui.Label("Unknown type"))
+                grid.add_child(gui.Label("Unknown type"))
 
-        svert.add_child(grid)
+            if description['read_only']:
+                edit.enabled = False
 
-        self.camera_config_panel.add_child(svert)
+            grid.add_child(edit)
+            svert.add_child(grid)
+
+        # svert.add_child(grid)
+        cvert.add_child(svert)
+
+        self.camera_config_panel.add_child(cvert)
         # self.monitor_image_widget.add_child(self.camera_config_panel)
         self.monitor_widget.add_child(self.camera_config_panel)
         self.monitor_widget.add_child(self.monitor_image_widget)
 
-        self.main_tabs.add_tab("Scanner Scene", self.scene_widget)
+        self.main_tabs.add_tab("3D Scene", self.scene_widget)
         self.main_tabs.add_tab("Monitor", self.monitor_widget)
 
         self.window.add_child(self.main_tabs)
@@ -873,7 +880,7 @@ class MyGui:
         self.webcam_panel.frame = gui.Rect(
             0.5*em, 3*em, panel_width, panel_height)
         self.camera_config_panel.frame = gui.Rect(
-            0.5*em, 3*em, panel_width, 1000)
+            0.5*em, 3*em, panel_width, panel_height)
 
         max_width = r.width - 1.5*em
         max_height = 10 * em
