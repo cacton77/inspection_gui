@@ -102,6 +102,8 @@ class MyGui:
 
         self.scene_widget.setup_camera(
             60, self.scene_widget.scene.bounding_box, [0, 0, 0])
+        self.scene_widget.set_view_controls(
+            gui.SceneWidget.Controls.ROTATE_CAMERA)
 
         # Add panel to display webcam stream
 
@@ -225,11 +227,18 @@ class MyGui:
         # grid.add_child(webcam_horiz)
         # self.webcam_panel.add_child(webcam_vert)
 
-        self.scene_widget.add_child(self.webcam_panel)
+        # self.scene_widget.add_child(self.webcam_panel)
 
         # MONITOR TAB ################################################################
 
-        self.monitor_widget = gui.Horiz()
+        # self.monitor_widget = gui.Horiz()
+        self.monitor_widget = gui.SceneWidget()
+        self.monitor_widget.scene = o3d.visualization.rendering.Open3DScene(
+            self.window.renderer)
+        self.monitor_widget.scene.set_background([0.0, 0.0, 0.0, 1.0])
+        self.monitor_widget.setup_camera(
+            60, self.scene_widget.scene.bounding_box, [0, 0, 0])
+
         self.monitor_image_widget = gui.ImageWidget()
         self.monitor_image_widget.update_image(o3d.geometry.Image(
             np.zeros((480, 640, 3), dtype=np.uint8)))
@@ -295,12 +304,14 @@ class MyGui:
         cvert.add_child(svert)
 
         self.camera_config_panel.add_child(cvert)
-        # self.monitor_image_widget.add_child(self.camera_config_panel)
-        self.monitor_widget.add_child(self.camera_config_panel)
-        self.monitor_widget.add_child(self.monitor_image_widget)
+        # self.monitor_widget.add_child(self.camera_config_panel)
+        self.monitor_widget.add_child(self.webcam_panel)
+        # self.monitor_widget.add_child(self.monitor_image_widget)
 
-        self.main_tabs.add_tab("3D Scene", self.scene_widget)
-        self.main_tabs.add_tab("Monitor", self.monitor_widget)
+        self.main_tabs.add_tab("3D Scene", gui.Widget())
+        self.main_tabs.add_tab("Monitor", gui.Widget())
+        self.window.add_child(self.scene_widget)
+        # self.window.add_child(self.monitor_widget)
 
         self.window.add_child(self.main_tabs)
         self.window.set_on_layout(self._on_layout)
@@ -734,6 +745,9 @@ class MyGui:
 
         if tab_index == MyGui.SCENE_TAB:
 
+            self.scene_widget.visible = True
+            self.scene_widget.enabled = True
+
             # RGB TAB ################################################################
 
             self.rgb_image.update_image(annotated_rgb_image_o3d)
@@ -819,6 +833,9 @@ class MyGui:
 
         elif tab_index == MyGui.MONITOR_TAB:
 
+            self.scene_widget.visible = False
+            self.scene_widget.enabled = False
+
             # MONITOR TAB ############################################################
 
             self.monitor_image_widget.update_image(gphoto2_image_o3d)
@@ -877,6 +894,9 @@ class MyGui:
         panel_width = width
         panel_height = height
 
+        self.main_tabs.frame = gui.Rect(0, 1.25*em, r.width, 2*em)
+        self.scene_widget.frame = gui.Rect(0, 4*em, r.width, r.height)
+        self.monitor_widget.frame = gui.Rect(0, 4*em, r.width, r.height)
         self.webcam_panel.frame = gui.Rect(
             0.5*em, 3*em, panel_width, panel_height)
         self.camera_config_panel.frame = gui.Rect(
