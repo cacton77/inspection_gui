@@ -49,6 +49,7 @@ class WebcamStream(Node):
         self.rgb_image = np.zeros((480, 640, 3), dtype=np.uint8)
         self.depth_image = np.zeros((480, 640, 1), dtype=np.float32)
         self.illuminance_image = np.zeros((480, 640, 1), dtype=np.uint8)
+        self.gphoto2_image = np.zeros((576, 1024, 3), dtype=np.uint8)
 
         self.depth_intrinsic_sub = self.create_subscription(
             Image, "/camera/camera/depth/camera_info", self.depth_intrinsic_callback, 10)
@@ -61,13 +62,18 @@ class WebcamStream(Node):
                                                      Image, "/camera/camera/depth/image_rect_raw")
         rgb_image_sub = message_filters.Subscriber(self,
                                                    Image, "/camera/camera/color/image_rect_raw")
+        # gphoto2_image_sub = message_filters.Subscriber(self,
+        #    Image, "/camera1/image_raw")
+        gphoto2_image_sub = self.create_subscription(
+            Image, "/camera1/image_raw", self.gphoto2_image_callback, 10)
+
         ts = Tf2MessageFilter(self, [depth_image_sub, rgb_image_sub], 'part_frame',
                               'camera_depth_optical_frame', queue_size=1000)
         ts.registerCallback(self.depth_image_callback)
 
         # Inference
 
-        inference_timer_period = 0.05
+        inference_timer_period = 0.1
         self.inference_timer = self.create_timer(
             inference_timer_period, self.inference_timer_callback)
 
@@ -122,8 +128,48 @@ class WebcamStream(Node):
             self.camera_params[param.name]['description'] = param.description
             self.camera_params[param.name]['choices'] = param.additional_constraints.split(
                 '\n')
-        pretty = json.dumps(self.camera_params, indent=4)
-        print(pretty)
+            self.camera_params[param.name]['read_only'] = param.read_only
+
+        self.camera_node_get_parameters_cli = self.create_client(
+            GetParameters, camera_node_name + '/get_parameters')
+        while not self.camera_node_get_parameters_cli.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('service not available, waiting again...')
+        req = GetParameters.Request()
+        req.names = param_names
+        self.get_logger().info('Sending get parameters request...')
+        future = self.camera_node_get_parameters_cli.call_async(req)
+        rclpy.spin_until_future_complete(self, future)
+        resp = future.result()
+
+        for i in range(len(param_names)):
+            print(rclpy.parameter.Parameter.Type.BOOL)
+            if resp.values[i].type == rclpy.Parameter.Type.BOOL:
+                self.camera_params[param_names[i]
+                                   ]['value'] = resp.values[i].bool_value
+            elif resp.values[i].type == rclpy.Parameter.Type.BOOL_ARRAY:
+                self.camera_params[param_names[i]
+                                   ]['value'] = resp.values[i].bool_array_value
+            elif resp.values[i].type == rclpy.Parameter.Type.BYTE_ARRAY:
+                self.camera_params[param_names[i]
+                                   ]['value'] = resp.values[i].byte_array_value
+            elif resp.values[i].type == rclpy.Parameter.Type.DOUBLE:
+                self.camera_params[param_names[i]
+                                   ]['value'] = resp.values[i].double_value
+            elif resp.values[i].type == rclpy.Parameter.Type.DOUBLE_ARRAY:
+                self.camera_params[param_names[i]
+                                   ['value']] = resp.values[i].double_array_value
+            elif resp.values[i].type == 2:
+                self.camera_params[param_names[i]
+                                   ]['value'] = resp.values[i].integer_value
+            elif resp.values[i].type == rclpy.Parameter.Type.INTEGER_ARRAY:
+                self.camera_params[param_names[i]
+                                   ]['value'] = resp.values[i].integer_array_value
+            elif resp.values[i].type == 4:
+                self.camera_params[param_names[i]
+                                   ]['value'] = resp.values[i].string_value
+            elif resp.values[i].type == rclpy.Parameter.Type.STRING_ARRAY:
+                self.camera_params[param_names[i]
+                                   ]['value'] = resp.values[i].string_array_value
 
     def inference_timer_callback(self):
         original_size = self.rgb_image.shape
@@ -166,6 +212,8 @@ class WebcamStream(Node):
             dmap_msg, desired_encoding="passthrough").astype(np.float32) / 1000.0
         rgb_image = self.bridge.imgmsg_to_cv2(
             rgb_msg, desired_encoding="passthrough").astype(np.uint8)
+        # gphoto2_image = self.bridge.imgmsg_to_cv2(
+        # gphoto2_msg, desired_encoding="passthrough").astype(np.uint8)
         hsv_image = cv2.cvtColor(rgb_image, cv2.COLOR_BGR2HSV).astype(np.uint8)
         # Set all pixels in image above 1000 to 0
         depth_image_m = depth_image / 1.0
@@ -190,9 +238,14 @@ class WebcamStream(Node):
         self.rgb_image = rgb_image
         self.T = T
         self.illuminance_image = hsv_image[:, :, 2]
+        # self.gphoto2_image = gphoto2_image
+
+    def gphoto2_image_callback(self, msg):
+        self.gphoto2_image = self.bridge.imgmsg_to_cv2(
+            msg, desired_encoding="rgb8").astype(np.uint8)
 
     def get_data(self):
-        return self.rgb_image, self.annotated_rgb_image, self.depth_image, self.depth_intrinsic, self.illuminance_image, self.T
+        return self.rgb_image, self.annotated_rgb_image, self.depth_image, self.depth_intrinsic, self.illuminance_image, self.gphoto2_image, self.T
 
     def read_rgb_image(self):
         return self.annotated_rgb_image

@@ -13,6 +13,7 @@ from matplotlib import colormaps
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from io import BytesIO
 from inspection_gui.webcam_stream import WebcamStream
+from inspection_gui.reconstruct import ReconstructThread
 
 plt.style.use('dark_background')
 
@@ -39,6 +40,8 @@ class MyGui:
     MENU_SHOW_ERRORS = 17
     MENU_ABOUT = 21
     GEOM_NAME = "Geometry"
+    SCENE_TAB = 0
+    MONITOR_TAB = 1
 
     def __init__(self, update_delay=-1):
         self.update_delay = update_delay
@@ -64,8 +67,12 @@ class MyGui:
 
         self.plot_cmap = 'cubehelix'
         self.webcam_fig = plt.figure()
+
+        # Threads
         self.webcam_stream = WebcamStream(stream_id=0)  # 0 id for main camera
+        self.reconstruct_thread = ReconstructThread()
         self.webcam_stream.start()  # processing frames in input stream
+        self.reconstruct_thread.start()  # processing frames in input stream
 
         self.main_tabs = gui.TabControl()
 
@@ -234,13 +241,49 @@ class MyGui:
             0/255, 0/255, 0/255, 1.0)
 
         svert = gui.ScrollableVert(0.25 * em)
-        grid = gui.VGrid(1, 0.25 * em)
+        grid = gui.VGrid(2, 0.25 * em)
 
         camera_params = self.webcam_stream.read_camera_params()
+        print(camera_params)
 
         # Loop through camera_params and add widgets to grid
         for key, value in camera_params.items():
             grid.add_child(gui.Label(key))
+            print(key)
+            print(value['type'])
+            print(value['choices'])
+            if value['type'] == 2:
+                edit = gui.NumberEdit(gui.NumberEdit.INT)
+                edit.int_value = value['value']
+                if value['read_only']:
+                    edit.enabled = False
+                grid.add_child(edit)
+            elif value['type'] == rclpy.Parameter.Type.DOUBLE:
+                edit = gui.TextEdit()
+                edit.double_value = value['value']
+                if value['read_only']:
+                    edit.enabled = False
+                grid.add_child(edit)
+            elif value['type'] == rclpy.Parameter.Type.BOOL:
+                edit = gui.Checkbox()
+                edit.checked = value['value']
+                if value['read_only']:
+                    edit.enabled = False
+                grid.add_child(edit)
+            elif value['type'] == 4:
+                print(type(value['choices']))
+                if len(value['choices']) > 1:
+                    edit = gui.Combobox()
+                    for choice in value['choices']:
+                        edit.add_item(choice)
+                else:
+                    edit = gui.TextEdit()
+                    edit.text_value = value['value']
+                if value['read_only']:
+                    edit.enabled = False
+                grid.add_child(edit)
+            else:
+                grid.add_child(gui.Label("Unknown type"))
 
         svert.add_child(grid)
 
@@ -659,109 +702,119 @@ class MyGui:
         return new_pcd
 
     def update_point_cloud(self):
-        rgb_image, annotated_rgb_image, depth_image, depth_intrinsic, illuminance_image, T = self.webcam_stream.get_data()
+        rgb_image, annotated_rgb_image, depth_image, depth_intrinsic, illuminance_image, gphoto2_image, T = self.webcam_stream.get_data()
 
         rgb_image_o3d = o3d.geometry.Image(rgb_image)
         annotated_rgb_image_o3d = o3d.geometry.Image(annotated_rgb_image)
         depth_image_o3d = o3d.geometry.Image(depth_image)
         illuminance_image_o3d = o3d.geometry.Image(
             cv2.cvtColor(illuminance_image, cv2.COLOR_GRAY2RGB))
+        gphoto2_image_o3d = o3d.geometry.Image(gphoto2_image)
+
+        # Get data from ReconstructThread
+        geom_pcd = self.reconstruct_thread.geom_pcd
+
+        self.reconstruct_thread.depth_image_o3d = depth_image_o3d
+        self.reconstruct_thread.rgb_image_o3d = rgb_image_o3d
+        self.reconstruct_thread.depth_intrinsic = depth_intrinsic
+        self.reconstruct_thread.T = T
 
         # TODO: Add switch cases to toggle between RGB, Depth, and Illuminance
 
-        # RGB TAB ################################################################
+        tab_index = self.main_tabs.selected_tab_index
 
-        self.rgb_image.update_image(annotated_rgb_image_o3d)
+        # SCENE TAB ################################################################
 
-        # ILLUMINANCE TAB ################################################################
+        if tab_index == MyGui.SCENE_TAB:
 
-        self.illuminance_image.update_image(illuminance_image_o3d)
+            # RGB TAB ################################################################
 
-        # DEPTH TAB ################################################################
+            self.rgb_image.update_image(annotated_rgb_image_o3d)
 
-        depth_image[depth_image > self.depth_trunc] = 0
-        ax = self.webcam_fig.add_subplot()
-        pos = ax.imshow(depth_image, cmap=self.plot_cmap,
-                        interpolation='none')
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes("right", size="5%", pad=0.05)
-        cbar = plt.colorbar(pos, cax=cax)
-        ax.axis('off')
-        buf = BytesIO()
-        plt.savefig(buf, format='png', bbox_inches='tight')
-        buf.seek(0)
-        plot_image = np.frombuffer(buf.getvalue(), dtype=np.uint8)
-        self.webcam_fig.clf()
-        plot_depth_image_cv2 = cv2.imdecode(plot_image, cv2.IMREAD_UNCHANGED)
-        plot_depth_image_cv2 = cv2.cvtColor(
-            plot_depth_image_cv2, cv2.COLOR_BGR2RGB)
-        # Replace black pixels with transparent pixels
-        plot_depth_image_cv2[np.all(
-            plot_depth_image_cv2 == [0, 0, 0], axis=-1)] = [255*self.webcam_panel.background_color.red,
-                                                            255*self.webcam_panel.background_color.green,
-                                                            255*self.webcam_panel.background_color.blue]
+            # ILLUMINANCE TAB ################################################################
 
-        image_o3d = o3d.geometry.Image(plot_depth_image_cv2)
-        self.depth_image.update_image(image_o3d)
+            self.illuminance_image.update_image(illuminance_image_o3d)
 
-        # SCENE WIDGET ############################################################
+            # DEPTH TAB ################################################################
 
-        # Add Axes
-        x_axis = o3d.geometry.LineSet()
-        x_axis.points = o3d.utility.Vector3dVector(
-            np.array([[-1000, 0, 0], [1000, 0, 0], [0, -1000, 0], [0, 1000, 0]]))
-        x_axis.lines = o3d.utility.Vector2iVector(np.array([[0, 1], [2, 3]]))
-        x_axis.colors = o3d.utility.Vector3dVector(
-            np.array([[1, 0, 0], [0, 1, 0]]))
-        self.scene_widget.scene.remove_geometry("x-axis")
-        self.scene_widget.scene.add_geometry(
-            "x-axis", x_axis, o3d.visualization.rendering.MaterialRecord())
+            depth_image[depth_image > self.depth_trunc] = 0
+            ax = self.webcam_fig.add_subplot()
+            pos = ax.imshow(depth_image, cmap=self.plot_cmap,
+                            interpolation='none')
+            divider = make_axes_locatable(ax)
+            cax = divider.append_axes("right", size="5%", pad=0.05)
+            cbar = plt.colorbar(pos, cax=cax)
+            ax.axis('off')
+            buf = BytesIO()
+            plt.savefig(buf, format='png', bbox_inches='tight')
+            buf.seek(0)
+            plot_image = np.frombuffer(buf.getvalue(), dtype=np.uint8)
+            self.webcam_fig.clf()
+            plot_depth_image_cv2 = cv2.imdecode(
+                plot_image, cv2.IMREAD_UNCHANGED)
+            plot_depth_image_cv2 = cv2.cvtColor(
+                plot_depth_image_cv2, cv2.COLOR_BGR2RGB)
+            # Replace black pixels with transparent pixels
+            plot_depth_image_cv2[np.all(
+                plot_depth_image_cv2 == [0, 0, 0], axis=-1)] = [255*self.webcam_panel.background_color.red,
+                                                                255*self.webcam_panel.background_color.green,
+                                                                255*self.webcam_panel.background_color.blue]
 
-        # Add Real-time PCD
+            image_o3d = o3d.geometry.Image(plot_depth_image_cv2)
+            self.depth_image.update_image(image_o3d)
 
-        rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(
-            rgb_image_o3d, depth_image_o3d, depth_scale=1.0, depth_trunc=self.depth_trunc, convert_rgb_to_intensity=False)
+            # SCENE WIDGET ############################################################
 
-        geom_pcd = o3d.geometry.PointCloud().create_from_rgbd_image(
-            rgbd_image, intrinsic=depth_intrinsic)  # , extrinsic=np.eye(4), depth_scale=1.0)
+            # Add Axes
+            x_axis = o3d.geometry.LineSet()
+            x_axis.points = o3d.utility.Vector3dVector(
+                np.array([[-1000, 0, 0], [1000, 0, 0], [0, -1000, 0], [0, 1000, 0]]))
+            x_axis.lines = o3d.utility.Vector2iVector(
+                np.array([[0, 1], [2, 3]]))
+            x_axis.colors = o3d.utility.Vector3dVector(
+                np.array([[1, 0, 0], [0, 1, 0]]))
+            self.scene_widget.scene.remove_geometry("x-axis")
+            self.scene_widget.scene.add_geometry(
+                "x-axis", x_axis, o3d.visualization.rendering.MaterialRecord())
 
-        geom_pcd.transform(T)
-        geom_pcd.scale(100.0, center=np.array([0, 0, 0]))
+            # Add Real-time PCD
 
-        self.scene_widget.enable_scene_caching(False)
-        self.scene_widget.scene.remove_geometry(self.pcd_name)
-        self.scene_widget.scene.add_geometry(
-            self.pcd_name, geom_pcd, self.pcd_material)
+            self.scene_widget.enable_scene_caching(False)
+            self.scene_widget.scene.remove_geometry(self.pcd_name)
+            self.scene_widget.scene.add_geometry(
+                self.pcd_name, geom_pcd, self.pcd_material)
 
-        # Add Camera
+            # Add Camera
 
-        camera = o3d.geometry.LineSet().create_camera_visualization(
-            depth_intrinsic, extrinsic=np.eye(4))
-        camera.scale(self.depth_trunc, center=np.array([0, 0, 0]))
-        camera.transform(T)
-        camera.scale(100.0, center=np.array([0, 0, 0]))
-        camera.paint_uniform_color(np.array([0/255, 255/255, 255/255]))
+            camera = o3d.geometry.LineSet().create_camera_visualization(
+                depth_intrinsic, extrinsic=np.eye(4))
+            camera.scale(self.depth_trunc, center=np.array([0, 0, 0]))
+            camera.transform(T)
+            camera.scale(100.0, center=np.array([0, 0, 0]))
+            camera.paint_uniform_color(np.array([0/255, 255/255, 255/255]))
 
-        self.scene_widget.scene.remove_geometry("camera")
-        self.scene_widget.scene.add_geometry(
-            "camera", camera, self.pcd_material)
+            self.scene_widget.scene.remove_geometry("camera")
+            self.scene_widget.scene.add_geometry(
+                "camera", camera, self.pcd_material)
 
-        # Add Light Ring
+            # Add Light Ring
 
-        light_ring_mesh = o3d.geometry.TriangleMesh.create_cylinder(
-            radius=0.1, height=0.01)
-        light_ring = o3d.geometry.LineSet.create_from_triangle_mesh(
-            light_ring_mesh)
-        light_ring.transform(T)
-        light_ring.scale(100.0, center=np.array([0, 0, 0]))
-        light_ring.paint_uniform_color(np.array([255/255, 255/255, 0/255]))
-        self.scene_widget.scene.remove_geometry("light_ring")
-        self.scene_widget.scene.add_geometry(
-            "light_ring", light_ring, self.pcd_material)
+            light_ring_mesh = o3d.geometry.TriangleMesh.create_cylinder(
+                radius=0.1, height=0.01)
+            light_ring = o3d.geometry.LineSet.create_from_triangle_mesh(
+                light_ring_mesh)
+            light_ring.transform(T)
+            light_ring.scale(100.0, center=np.array([0, 0, 0]))
+            light_ring.paint_uniform_color(np.array([255/255, 255/255, 0/255]))
+            self.scene_widget.scene.remove_geometry("light_ring")
+            self.scene_widget.scene.add_geometry(
+                "light_ring", light_ring, self.pcd_material)
 
-        # MONITOR TAB ############################################################
+        elif tab_index == MyGui.MONITOR_TAB:
 
-        self.monitor_image_widget.update_image(annotated_rgb_image_o3d)
+            # MONITOR TAB ############################################################
+
+            self.monitor_image_widget.update_image(gphoto2_image_o3d)
 
         # Update log
         self.log_list = self.webcam_stream.read_log()
