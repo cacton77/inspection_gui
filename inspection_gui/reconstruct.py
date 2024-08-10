@@ -5,9 +5,9 @@ import open3d as o3d
 
 
 class ReconstructThread:
-    def __init__(self):
+    def __init__(self, rate=10):
 
-        self.period = 1/5
+        self.period = 1/rate
 
         self.stopped = True
         self.t = threading.Thread(target=self.update, args=())

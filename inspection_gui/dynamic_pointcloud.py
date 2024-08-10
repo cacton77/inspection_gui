@@ -49,19 +49,36 @@ class MyGui:
         self.lock = threading.Lock()
 
         self.app = gui.Application.instance
+
+        icons_font = gui.FontDescription(
+            '/tmp/MaterialIcons-Regular.ttf', point_size=12)
+        icons_font.add_typeface_for_code_points(
+            '/tmp/MaterialIcons-Regular.ttf', [0xE037, 0xE034])
+        icons_font_id = gui.Application.instance.add_font(icons_font)
+
         self.window = self.app.create_window(
-            "Inspection Viz-I-Vizard", width=1024, height=728, x=0, y=30)
+            "Inspection Viz-I-Vizard", width=1920, height=1080, x=0, y=30)
+
+        em = self.window.theme.font_size
+        r = self.window.content_rect
+        self.menu_height = 2.5 * em
+        self.header_height = 3 * em
+        self.footer_height = 10 * em
+        self.main_frame_size = (
+            r.width, r.height - self.menu_height - self.header_height)
 
         w = self.window
         self.window.set_on_close(self.on_main_window_closing)
         if self.update_delay < 0:
             self.window.set_on_tick_event(self.on_main_window_tick_event)
 
-        em = self.window.theme.font_size
-
         ###############################
 
         self.depth_trunc = 1.0
+
+        # Common settings for all panels
+        self.panel_color = gui.Color(44/255, 54/255, 57/255, 0.8)
+        self.background_color = [22/255, 29/255, 36/255, 1.0]
 
         ###############################
 
@@ -70,18 +87,41 @@ class MyGui:
 
         # Threads
         self.webcam_stream = WebcamStream(stream_id=0)  # 0 id for main camera
-        self.reconstruct_thread = ReconstructThread()
+        self.reconstruct_thread = ReconstructThread(rate=20)
         self.webcam_stream.start()  # processing frames in input stream
         self.reconstruct_thread.start()  # processing frames in input stream
 
         self.main_tabs = gui.TabControl()
+        self.main_tabs.background_color = self.panel_color
 
         # SCANNER TAB ################################################################
+
+        # Tab buttons
+        self.scene_ribbon = gui.Horiz(0, gui.Margins(
+            0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+        button = gui.Button("Scan")
+
+        # Scene ribbon
+
+        # Attempt to add Material Icons to button
+        # 0xE037, 0xE034
+        play_button = gui.Button("\uE037 Play")
+        play_label = gui.Label("\uE037")
+        play_label.font_id = icons_font_id
+        # play_button.add_child(play_label)
+
+        stop_button = gui.Button('Stop')
+
+        self.scene_ribbon.add_child(gui.Label("Scan: "))
+        self.scene_ribbon.add_child(button)
+        self.scene_ribbon.add_child(play_button)
+        self.scene_ribbon.add_child(stop_button)
 
         self.scene_widget = gui.SceneWidget()
         self.scene_widget.scene = o3d.visualization.rendering.Open3DScene(
             self.window.renderer)
-        self.scene_widget.scene.set_background([0.0, 0.0, 0.0, 1.0])
+        self.scene_widget.scene.set_background(self.background_color)
+        self.scene_widget.enable_scene_caching(False)
 
         # self.window.add_child(self.scene_widget)
         self.scene_widget.scene.show_axes(False)
@@ -95,7 +135,7 @@ class MyGui:
         self.pcd_name = "Point Cloud"
         self.pcd_material = o3d.visualization.rendering.MaterialRecord()
         self.pcd_material.shader = 'defaultUnlit'
-        self.pcd_material.point_size = 3.0
+        self.pcd_material.point_size = 5.0
 
         self.scene_widget.scene.add_geometry(
             self.pcd_name, self.geom_pcd, self.pcd_material)
@@ -107,10 +147,9 @@ class MyGui:
 
         # Add panel to display webcam stream
 
-        self.webcam_panel = gui.Vert(0, gui.Margins(
+        self.webcam_panel = gui.CollapsableVert("Stereo Camera", 0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
-        self.webcam_panel.background_color = gui.Color(
-            18/255, 18/255, 18/255, 0.8)
+        self.webcam_panel.background_color = self.panel_color
 
         grid = gui.VGrid(1, 0.25 * em)
 
@@ -124,6 +163,7 @@ class MyGui:
         # RGB TAB ################################################################
 
         self.rgb_image = gui.ImageWidget()
+        self.rgb_image.set_on_mouse(self._monitor_mouse_event)
         rgb_grid.add_child(self.rgb_image)
 
         # DEPTH TAB ################################################################
@@ -132,6 +172,7 @@ class MyGui:
 
         def on_depth_trunc_changed(value):
             self.depth_trunc = value
+            self.reconstruct_thread.depth_trunc = self.depth_trunc
             self.webcam_stream.depth_trunc = self.depth_trunc
 
         depth_trunc_edit = gui.Slider(gui.Slider.DOUBLE)
@@ -140,56 +181,8 @@ class MyGui:
         depth_trunc_edit.background_color = gui.Color(0, 0, 0, 0.8)
         depth_trunc_edit.set_on_value_changed(on_depth_trunc_changed)
 
-        # Add 5 buttons horizontally to webcam vert
-        # Create horizontal layout
-
-        grid2 = gui.VGrid(3, 0.25 * em)
-        empty = gui.Horiz()
-        empty.add_stretch()
-        grid2.add_child(gui.Label("Controls"))
-        webcam_horiz = gui.Horiz()
-
-        skip_back_button = gui.Button('<|')
-        skip_back_button.background_color = gui.Color(
-            0.5, 0.5, 0.5, 1.0)
-        webcam_horiz.add_child(skip_back_button)
-
-        back_button = gui.Button('<')
-        back_button.background_color = gui.Color(
-            0.5, 0.5, 0.5, 1.0)
-        webcam_horiz.add_child(back_button)
-
-        play_button = gui.Button('P')
-        play_button.background_color = gui.Color(
-            0.0, 0.8, 0.0, 1.0)
-        webcam_horiz.add_child(play_button)
-
-        record_button = gui.Button('O')
-        record_button.background_color = gui.Color(
-            0.8, 0.0, 0.0, 1.0)
-        webcam_horiz.add_child(record_button)
-
-        forward_button = gui.Button('>')
-        forward_button.background_color = gui.Color(
-            0.5, 0.5, 0.5, 1.0)
-        webcam_horiz.add_child(forward_button)
-
-        skip_forward_button = gui.Button('|>')
-        skip_forward_button.background_color = gui.Color(
-            0.5, 0.5, 0.5, 1.0)
-        webcam_horiz.add_child(skip_forward_button)
-
-        grid2.add_child(webcam_horiz)
-
-        buffer_text = gui.TextEdit()
-        buffer_text.enabled = False
-        buffer_text.text_value = "0/1000"
-        grid2.add_child(buffer_text)
-        # webcam_horiz.add_child(buffer_text)
-
         depth_grid.add_child(self.depth_image)
         depth_grid.add_child(depth_trunc_edit)
-        depth_grid.add_child(grid2)
 
         # ILLUMINANCE TAB ################################################################
 
@@ -197,7 +190,8 @@ class MyGui:
         illuminance_grid.add_child(self.illuminance_image)
 
         tabs = gui.TabControl()
-        tabs.add_tab("RGB", rgb_grid)
+        # tabs.add_tab("RGB", rgb_grid)
+        tabs.add_tab("RGB", self.rgb_image)
         tabs.add_tab("Depth", depth_grid)
         tabs.add_tab("Illuminance", illuminance_grid)
         tabs.add_child(gui.TabControl())
@@ -207,10 +201,9 @@ class MyGui:
 
         # LOG PANEL ################################################################
 
-        self.ros_log_panel = gui.CollapsableVert("Log", 0, gui.Margins(
+        self.log_panel = gui.CollapsableVert("Log", 0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
-        self.ros_log_panel.background_color = gui.Color(
-            0/255, 0/255, 0/255, 0.8)
+        self.log_panel.background_color = self.panel_color
         ros_log_vert = gui.ScrollableVert(
             0.25 * em)
         self.ros_log_text = gui.ListView()
@@ -220,8 +213,8 @@ class MyGui:
         self.ros_log_text.set_items(self.log_list)
         self.ros_log_text.selected_index = 0
         # ros_log_vert.add_child(self.ros_log_text)
-        # self.ros_log_panel.add_child(ros_log_vert)
-        self.ros_log_panel.add_child(self.ros_log_text)
+        # self.log_panel.add_child(ros_log_vert)
+        self.log_panel.add_child(self.ros_log_text)
 
         # webcam_vert.add_child(webcam_horiz)
         # grid.add_child(webcam_horiz)
@@ -231,27 +224,41 @@ class MyGui:
 
         # MONITOR TAB ################################################################
 
-        # self.monitor_widget = gui.Horiz()
-        self.monitor_widget = gui.SceneWidget()
-        self.monitor_widget.scene = o3d.visualization.rendering.Open3DScene(
-            self.window.renderer)
-        self.monitor_widget.scene.set_background([0.0, 0.0, 0.0, 1.0])
-        self.monitor_widget.setup_camera(
-            60, self.scene_widget.scene.bounding_box, [0, 0, 0])
+        self.monitor_ribbon = gui.Horiz(0, gui.Margins(
+            0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
 
-        self.monitor_image_widget = gui.ImageWidget()
+        for i in range(10):
+            button = gui.Button(f"Button {i}")
+            self.monitor_ribbon.add_child(button)
+
+        self.monitor_image_panel = gui.Vert(0, gui.Margins(
+            0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+
+        class MonitorImageWidget(gui.ImageWidget):
+            def __init__(self):
+                super().__init__()
+
+            def on_mouse_event(self, event):
+                return o3d.visualization.gui.Widget.EventCallbackResult.CONSUMED
+
+        self.monitor_image_widget = MonitorImageWidget()
         self.monitor_image_widget.update_image(o3d.geometry.Image(
             np.zeros((480, 640, 3), dtype=np.uint8)))
-        self.monitor_image_widget.enabled = False
+        self.monitor_image_widget.set_on_mouse(self._monitor_mouse_event)
 
-        self.camera_config_panel = gui.Vert(0, gui.Margins(
+        self.monitor_image_panel.add_child(self.monitor_image_widget)
+        self.monitor_image_panel.background_color = self.panel_color
+        self.monitor_image_panel.enabled = False
+        self.monitor_image_panel.visible = False
+
+        self.camera_config_panel = gui.CollapsableVert("Camera Configuration", 0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
-        self.camera_config_panel.background_color = gui.Color(
-            0/255, 0/255, 0/255, 1.0)
+        self.camera_config_panel.background_color = self.panel_color
+        self.camera_config_panel.enabled = False
+        self.camera_config_panel.visible = False
 
-        cvert = gui.CollapsableVert("Camera Configuration")
         svert = gui.ScrollableVert(0.25 * em)
-        # grid = gui.VGrid(2, 0.25 * em)
+        svert.background_color = self.panel_color
 
         camera_params = self.webcam_stream.read_camera_params()
 
@@ -262,12 +269,19 @@ class MyGui:
 
         param_names_ordered = camera_params.keys()
 
+        grid = gui.VGrid(2, 0.25 * em)
+
         # Loop through camera_params and add widgets to grid
         for name in param_names_ordered:
+            # Truncate name to 20 characters
+            if len(name) > 20:
+                display_name = name[:20] + '...'
+            else:
+                display_name = name
             description = camera_params[name]
-            grid = gui.Horiz(0, gui.Margins(
-                0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
-            grid.add_child(gui.Label(f'{name}: '))
+            # grid = gui.Horiz(0, gui.Margins(
+            # 0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+            grid.add_child(gui.Label(f'{display_name}: '))
 
             if description['type'] == 2:
                 edit = gui.NumberEdit(gui.NumberEdit.INT)
@@ -278,7 +292,6 @@ class MyGui:
                 # edit.double_value = float(description['value'])
 
             elif description['type'] == 1:
-                print(description)
                 edit = gui.Checkbox(name)
                 # edit.checked = description['value']
 
@@ -298,25 +311,24 @@ class MyGui:
                 edit.enabled = False
 
             grid.add_child(edit)
-            svert.add_child(grid)
+            # self.camera_config_panel.add_child(grid)
 
-        # svert.add_child(grid)
-        cvert.add_child(svert)
+        svert.add_child(grid)
 
-        self.camera_config_panel.add_child(cvert)
+        self.camera_config_panel.add_child(svert)
         # self.monitor_widget.add_child(self.camera_config_panel)
-        self.monitor_widget.add_child(self.webcam_panel)
         # self.monitor_widget.add_child(self.monitor_image_widget)
 
-        self.main_tabs.add_tab("3D Scene", gui.Widget())
-        self.main_tabs.add_tab("Monitor", gui.Widget())
+        self.main_tabs.add_tab("3D Scene", self.scene_ribbon)
+        self.main_tabs.add_tab("Monitor", self.monitor_ribbon)
         self.window.add_child(self.scene_widget)
-        # self.window.add_child(self.monitor_widget)
 
+        self.window.add_child(self.monitor_image_panel)
         self.window.add_child(self.main_tabs)
-        self.window.set_on_layout(self._on_layout)
         self.window.add_child(self.webcam_panel)
-        self.window.add_child(self.ros_log_panel)
+        self.window.add_child(self.log_panel)
+        self.window.add_child(self.camera_config_panel)
+        self.window.set_on_layout(self._on_layout)
 
         # ---- Menu ----
         # The menu is global (because the macOS menu is global), so only create
@@ -556,14 +568,15 @@ class MyGui:
         cmap_select.set_on_selection_changed(on_cmap_select)
 
         def on_panel_color_changed(c):
-            self.webcam_panel.background_color = gui.Color(
-                c.red, c.green, c.blue, c.alpha)
+            self.panel_color = gui.Color(c.red, c.green, c.blue, c.alpha)
+            self.webcam_panel.background_color = self.panel_color
+            self.main_tabs.background_color = self.panel_color
+            self.log_panel.background_color = self.panel_color
+            self.camera_config_panel.background_color = self.panel_color
 
         panel_color_edit = gui.ColorEdit()
-        # bgc = self.scene_widget.scene.background_color
         # Example default RGBA background color
-        # background_color_edit.color_value = gui.Color(
-        # bgc[0], bgc[1], bgc[2], bgc[3])
+        panel_color_edit.color_value = self.panel_color
         panel_color_edit.set_on_value_changed(on_panel_color_changed)
 
         def on_background_color_changed(c):
@@ -683,6 +696,33 @@ class MyGui:
         # Show the dialog
         self.window.show_dialog(dlg)
 
+    def _monitor_mouse_event(self, event):
+        if event.type == gui.MouseEvent.Type.BUTTON_DOWN:
+            # Pan on
+            if event.is_button_down(gui.MouseButton.RIGHT):
+                self.webcam_stream.pan_pos = (event.x, event.y)
+            # Orbit on
+            elif event.is_button_down(gui.MouseButton.LEFT):
+                self.webcam_stream.orbit_pos = (event.x, event.y)
+            return gui.Widget.EventCallbackResult.CONSUMED
+        elif event.type == gui.MouseEvent.Type.BUTTON_UP:
+            # Pan off
+            if event.is_button_down(gui.MouseButton.RIGHT):
+                self.webcam_stream.pan_goal = self.webcam_stream.pan_goal
+            # Orbit off
+            elif event.is_button_down(gui.MouseButton.LEFT):
+                self.webcam_stream.orbit_goal = self.webcam_stream.orbit_goal
+            return gui.Widget.EventCallbackResult.HANDLED
+        elif event.type == gui.MouseEvent.Type.DRAG:
+            # Change pan goal
+            if event.is_button_down(gui.MouseButton.RIGHT):
+                self.webcam_stream.pan_goal = (event.x, event.y)
+            # Change orbit goal
+            if event.is_button_down(gui.MouseButton.LEFT):
+                self.webcam_stream.orbit_goal = (event.x, event.y)
+            return gui.Widget.EventCallbackResult.HANDLED
+        return gui.Widget.EventCallbackResult.IGNORED
+
     def _on_menu_show_axes(self):
         self.scene_widget.scene.show_axes(True)
 
@@ -713,6 +753,9 @@ class MyGui:
     def _exit(self):
         pass
 
+    def set_panel_color(self, color):
+        self.webcam_panel.background_color = color
+
     def generate_point_cloud():
         new_pcd = o3d.geometry.PointCloud()
         points = np.random.rand(100, 3)
@@ -727,7 +770,6 @@ class MyGui:
         depth_image_o3d = o3d.geometry.Image(depth_image)
         illuminance_image_o3d = o3d.geometry.Image(
             cv2.cvtColor(illuminance_image, cv2.COLOR_GRAY2RGB))
-        gphoto2_image_o3d = o3d.geometry.Image(gphoto2_image)
 
         # Get data from ReconstructThread
         geom_pcd = self.reconstruct_thread.geom_pcd
@@ -741,22 +783,38 @@ class MyGui:
 
         tab_index = self.main_tabs.selected_tab_index
 
-        # SCENE TAB ################################################################
+        # REMOVE GEOMETRY ##########################################################
+
+        self.scene_widget.scene.remove_geometry("x-axis")
+        self.scene_widget.scene.remove_geometry(self.pcd_name)
+        self.scene_widget.scene.remove_geometry("camera")
+        self.scene_widget.scene.remove_geometry("light_ring")
+
+        # UPDATE SCENE TAB #########################################################
 
         if tab_index == MyGui.SCENE_TAB:
 
-            self.scene_widget.visible = True
-            self.scene_widget.enabled = True
+            # Show/hide and enable/disable UI elements
+            self.webcam_panel.enabled = True
+            self.webcam_panel.visible = True
+            self.camera_config_panel.enabled = False
+            self.camera_config_panel.visible = False
+            self.monitor_image_panel.enabled = False
+            self.monitor_image_panel.visible = False
+            self.monitor_image_widget.enabled = False
+            self.scene_widget.scene.show_ground_plane(
+                True, o3d.visualization.rendering.Scene.GroundPlane.XY)
+            self.main_tabs.selected_tab_index = MyGui.SCENE_TAB
 
-            # RGB TAB ################################################################
+            # RGB TAB ################################################
 
             self.rgb_image.update_image(annotated_rgb_image_o3d)
 
-            # ILLUMINANCE TAB ################################################################
+            # ILLUMINANCE TAB ########################################
 
             self.illuminance_image.update_image(illuminance_image_o3d)
 
-            # DEPTH TAB ################################################################
+            # DEPTH TAB ##############################################
 
             depth_image[depth_image > self.depth_trunc] = 0
             ax = self.webcam_fig.add_subplot()
@@ -784,9 +842,16 @@ class MyGui:
             image_o3d = o3d.geometry.Image(plot_depth_image_cv2)
             self.depth_image.update_image(image_o3d)
 
-            # SCENE WIDGET ############################################################
+            # 3D SCENE WIDGET ##########################################
 
-            # Add Axes
+            # Line material
+
+            line_mat = o3d.visualization.rendering.MaterialRecord()
+            line_mat.shader = 'unlitLine'
+            line_mat.line_width = 1.0
+
+            # Add XY Axes
+
             x_axis = o3d.geometry.LineSet()
             x_axis.points = o3d.utility.Vector3dVector(
                 np.array([[-1000, 0, 0], [1000, 0, 0], [0, -1000, 0], [0, 1000, 0]]))
@@ -794,14 +859,10 @@ class MyGui:
                 np.array([[0, 1], [2, 3]]))
             x_axis.colors = o3d.utility.Vector3dVector(
                 np.array([[1, 0, 0], [0, 1, 0]]))
-            self.scene_widget.scene.remove_geometry("x-axis")
-            self.scene_widget.scene.add_geometry(
-                "x-axis", x_axis, o3d.visualization.rendering.MaterialRecord())
+            self.scene_widget.scene.add_geometry("x-axis", x_axis, line_mat)
 
             # Add Real-time PCD
 
-            self.scene_widget.enable_scene_caching(False)
-            self.scene_widget.scene.remove_geometry(self.pcd_name)
             self.scene_widget.scene.add_geometry(
                 self.pcd_name, geom_pcd, self.pcd_material)
 
@@ -814,9 +875,7 @@ class MyGui:
             camera.scale(100.0, center=np.array([0, 0, 0]))
             camera.paint_uniform_color(np.array([0/255, 255/255, 255/255]))
 
-            self.scene_widget.scene.remove_geometry("camera")
-            self.scene_widget.scene.add_geometry(
-                "camera", camera, self.pcd_material)
+            self.scene_widget.scene.add_geometry("camera", camera, line_mat)
 
             # Add Light Ring
 
@@ -827,16 +886,35 @@ class MyGui:
             light_ring.transform(T)
             light_ring.scale(100.0, center=np.array([0, 0, 0]))
             light_ring.paint_uniform_color(np.array([255/255, 255/255, 0/255]))
-            self.scene_widget.scene.remove_geometry("light_ring")
+
             self.scene_widget.scene.add_geometry(
-                "light_ring", light_ring, self.pcd_material)
+                "light_ring", light_ring, line_mat)
+
+        # UPDATE MONITOR TAB #########################################################
 
         elif tab_index == MyGui.MONITOR_TAB:
 
-            self.scene_widget.visible = False
-            self.scene_widget.enabled = False
+            # Show/hide and enable/disable UI elements
+
+            self.webcam_panel.enabled = False
+            self.webcam_panel.visible = False
+            self.camera_config_panel.enabled = True
+            self.camera_config_panel.visible = True
+            # self.monitor_image_panel.enabled = True
+            self.monitor_image_panel.visible = True
+            self.scene_widget.scene.show_ground_plane(
+                False, o3d.visualization.rendering.Scene.GroundPlane.XY)
+            self.main_tabs.selected_tab_index = MyGui.MONITOR_TAB
 
             # MONITOR TAB ############################################################
+
+            r = self.window.content_rect
+            # Scale image evenly to fill the window
+            scale = max(r.width / gphoto2_image.shape[0],
+                        r.height / gphoto2_image.shape[1])
+            gphoto2_image = cv2.resize(
+                gphoto2_image, (0, 0), fx=scale, fy=scale)
+            gphoto2_image_o3d = o3d.geometry.Image(gphoto2_image)
 
             self.monitor_image_widget.update_image(gphoto2_image_o3d)
 
@@ -884,38 +962,55 @@ class MyGui:
         em = self.window.theme.font_size
 
         r = self.window.content_rect
+
         self.main_tabs.frame = r
         self.scene_widget.frame = r
-        self.monitor_widget.frame = r
         width = 30 * layout_context.theme.font_size
         height = self.webcam_panel.calc_preferred_size(
             layout_context, gui.Widget.Constraints()).height
+        if height < 10 * em:
+            width = 7.5 * em
 
         panel_width = width
-        panel_height = height
+        panel_height = height/1.5
 
-        self.main_tabs.frame = gui.Rect(0, 1.25*em, r.width, 2*em)
-        self.scene_widget.frame = gui.Rect(0, 4*em, r.width, r.height)
-        self.monitor_widget.frame = gui.Rect(0, 4*em, r.width, r.height)
+        tab_frame_top = 1.5*em
+        tab_frame_height = 3*em
+
+        self.main_tabs.frame = gui.Rect(
+            0, tab_frame_top, r.width, tab_frame_top + tab_frame_height)
+
+        main_frame_top = 2*tab_frame_top + tab_frame_height
+
+        # self.scene_widget.frame = gui.Rect(
+        # 0, main_frame_top, r.width, r.height - main_frame_top)
+        self.scene_widget.frame = r
         self.webcam_panel.frame = gui.Rect(
-            0.5*em, 3*em, panel_width, panel_height)
+            0, main_frame_top + 2*em, panel_width, panel_height)
+
+        # self.monitor_image_panel.frame = r
+        panel_width = 0.25 * r.width
+
+        self.monitor_image_panel.frame = gui.Rect(
+            0, main_frame_top, r.width, r.height)
+        self.main_frame_size = (r.width, r.height)
         self.camera_config_panel.frame = gui.Rect(
-            0.5*em, 3*em, panel_width, panel_height)
+            0, main_frame_top + 2*em, panel_width, panel_height)
 
         max_width = r.width - 1.5*em
         max_height = 10 * em
-        height = min(self.ros_log_panel.calc_preferred_size(
+        height = min(self.log_panel.calc_preferred_size(
             layout_context, gui.Widget.Constraints()).height, max_height)
         if height == max_height:
             width = max_width
         else:
-            width = self.ros_log_panel.calc_preferred_size(
+            width = self.log_panel.calc_preferred_size(
                 layout_context, gui.Widget.Constraints()).width
 
         panel_width = width
         panel_height = height
-        self.ros_log_panel.frame = gui.Rect(
-            0.5*em, r.height - panel_height, panel_width, panel_height)
+        self.log_panel.frame = gui.Rect(
+            0, r.height - panel_height + 1.5*em, r.width, panel_height)
 
 
 def main():

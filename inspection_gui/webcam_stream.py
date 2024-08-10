@@ -16,6 +16,7 @@ from ultralytics import YOLO
 
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
+from geometry_msgs.msg import TwistStamped
 from rcl_interfaces.msg import Parameter
 from rcl_interfaces.srv import ListParameters, DescribeParameters, GetParameters, SetParameters
 
@@ -32,9 +33,9 @@ class WebcamStream(Node):
         self.bridge = CvBridge()
 
         yolov8 = YOLO('yolov8n-seg.pt')
-        self.yolov8_seg = yolov8
-        # yolov8.export(format='openvino')
-        # self.yolov8_seg = YOLO("yolov8n-seg_openvino_model/")
+        # self.yolov8_seg = yolov8
+        yolov8.export(format='openvino')
+        self.yolov8_seg = YOLO("yolov8n-seg_openvino_model/")
 
         self.stopped = True        # thread instantiation
         self.t = threading.Thread(target=self.update, args=())
@@ -75,9 +76,31 @@ class WebcamStream(Node):
 
         # Inference
 
+        self.twist = TwistStamped()
         inference_timer_period = 0.1
         self.inference_timer = self.create_timer(
             inference_timer_period, self.inference_timer_callback)
+
+        # Send moveit servo command
+
+        self.m = 10
+        self.k_p = 15.0
+        self.c_p = 25.0
+        self.k_o = 0.1
+        self.c_o = 0.1
+        self.pan_pos = (0., 0.)
+        self.pan_vel = (0., 0.)
+        self.pan_vel_max = (0.1, 0.1)
+        self.pan_goal = (0., 0.)
+        self.orbit_pos = (0., 0.)
+        self.orbit_vel = (0., 0.)
+        self.orbit_vel_max = (0.1, 0.1)
+        self.orbit_goal = (0., 0.)
+        self.twist_pub = self.create_publisher(
+            TwistStamped, '/servo_node/delta_twist_cmds', 10)
+        self.twist_pub_timer_period = 0.1
+        self.twist_pub_timer = self.create_timer(
+            self.twist_pub_timer_period, self.twist_pub_timer_callback)
 
         # Generate first point cloud
         light_ring = o3d.geometry.TriangleMesh.create_cylinder(
@@ -142,9 +165,7 @@ class WebcamStream(Node):
         resp = future.result()
 
         for i in range(len(param_names)):
-            print(rclpy.parameter.Parameter.Type.BOOL)
             if resp.values[i].type == rclpy.Parameter.Type.BOOL:
-                print(f'{param_names[i]}: {resp.values[i].bool_value}')
                 self.camera_params[param_names[i]
                                    ]['value'] = resp.values[i].bool_value
             elif resp.values[i].type == rclpy.Parameter.Type.BOOL_ARRAY:
@@ -229,9 +250,36 @@ class WebcamStream(Node):
 
         rgb_image_resized = cv2.resize(
             img, dim, interpolation=cv2.INTER_AREA).astype(np.uint8)
-        results = self.yolov8_seg(img.astype(np.uint8))
+        results = self.yolov8_seg(img.astype(np.uint8), verbose=False)
         # self.annotated_rgb_image = self.rgb_image
         self.annotated_rgb_image = results[0].plot().astype(np.uint8)
+
+    def twist_pub_timer_callback(self):
+        # Do not publish if all twist values are zero
+        px0 = self.pan_pos[0]
+        gx = self.pan_goal[0]
+        vx0 = self.pan_vel[0]
+        ax = (self.k_p * (gx - px0) - self.c_p * vx0) / self.m
+        vx1 = vx0 + ax * self.twist_pub_timer_period
+        px1 = px0 + vx1 * self.twist_pub_timer_period
+        py0 = self.pan_pos[1]
+        gy = self.pan_goal[1]
+        vy0 = self.pan_vel[1]
+        ay = (self.k_p * (gy - py0) - self.c_p * vy0) / self.m
+        vy1 = vy0 + ay * self.twist_pub_timer_period
+        py1 = py0 + vy1 * self.twist_pub_timer_period
+        # Round to 3 decimal places
+        vx1 = round(vx1, 2)
+        vy1 = round(vy1, 2)
+        px1 = round(px1, 2)
+        py1 = round(py1, 2)
+        self.pan_vel = (vx1, vy1)
+        self.pan_pos = (px1, py1)
+
+        print(f'Vx: {vx1}, Vy: {vy1}')
+
+        self.twist.header.stamp = self.get_clock().now().to_msg()
+        self.twist_pub.publish(self.twist)
 
     def generate_point_cloud(self):
         new_pcd = o3d.geometry.PointCloud()
