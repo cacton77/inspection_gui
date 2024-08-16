@@ -20,7 +20,7 @@ class ReconstructThread:
             np.zeros((480, 640, 1), dtype=np.float32))
         self.depth_intrinsic = o3d.camera.PinholeCameraIntrinsic(
             o3d.camera.PinholeCameraIntrinsicParameters.PrimeSenseDefault)
-        self.geom_pcd = o3d.geometry.PointCloud()
+        self.live_point_cloud = o3d.geometry.PointCloud()
         self.T = np.eye(4)
 
     def start(self):
@@ -40,15 +40,15 @@ class ReconstructThread:
         rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(
             self.rgb_image_o3d, self.depth_image_o3d, depth_scale=1.0, depth_trunc=self.depth_trunc, convert_rgb_to_intensity=False)
 
-        self.geom_pcd = o3d.geometry.PointCloud().create_from_rgbd_image(
+        self.live_point_cloud = o3d.geometry.PointCloud().create_from_rgbd_image(
             rgbd_image, intrinsic=self.depth_intrinsic)  # , extrinsic=np.eye(4), depth_scale=1.0)
 
-        self.geom_pcd.transform(self.T)
-        self.geom_pcd.scale(100.0, center=np.array([0, 0, 0]))
+        self.live_point_cloud.transform(self.T)
+        self.live_point_cloud.scale(100.0, center=np.array([0, 0, 0]))
 
     def stop(self):
         self.stopped = True
         self.t.join()
 
     def get_pcd(self):
-        return self.geom_pcd
+        return self.live_point_cloud

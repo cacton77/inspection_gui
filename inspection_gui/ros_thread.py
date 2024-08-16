@@ -13,8 +13,11 @@ import message_filters
 from io import BytesIO
 from math import pi
 from ultralytics import YOLO
+import pytransform3d.rotations as pr
 
+import tf2_ros
 from cv_bridge import CvBridge
+from std_msgs.msg import Float32
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import TwistStamped
 from rcl_interfaces.msg import Parameter
@@ -23,7 +26,7 @@ from rcl_interfaces.srv import ListParameters, DescribeParameters, GetParameters
 from inspection_gui.tf2_message_filter import Tf2MessageFilter
 
 
-class WebcamStream(Node):
+class RosThread(Node):
     # initialization method
     def __init__(self, stream_id=0):
         super().__init__('scanner_node')
@@ -84,18 +87,26 @@ class WebcamStream(Node):
         # Send moveit servo command
 
         self.m = 10
-        self.k_p = 15.0
+        self.k_p = 0.01
         self.c_p = 25.0
         self.k_o = 0.1
         self.c_o = 0.1
-        self.pan_pos = (0., 0.)
-        self.pan_vel = (0., 0.)
-        self.pan_vel_max = (0.1, 0.1)
-        self.pan_goal = (0., 0.)
-        self.orbit_pos = (0., 0.)
-        self.orbit_vel = (0., 0.)
-        self.orbit_vel_max = (0.1, 0.1)
-        self.orbit_goal = (0., 0.)
+
+        self.pan_pos = (0., 0., 0.)
+        self.pan_vel = (0., 0., 0.)
+        self.pan_vel_max = (0.1, 0.1, 0.1)
+        self.pan_goal = (0., 0., 0.)
+
+        self.orbit_pos = (0., 0., 0.)
+        self.orbit_vel = (0., 0., 0.)
+        self.orbit_vel_max = (0.1, 0.1, 0.1)
+        self.orbit_goal = (0., 0., 0.)
+
+        self.zoom_pos = 0.0
+        self.zoom_vel = 0.0
+        self.zoom_vel_max = 0.1
+        self.zoom_goal = 0.0
+
         self.twist_pub = self.create_publisher(
             TwistStamped, '/servo_node/delta_twist_cmds', 10)
         self.twist_pub_timer_period = 0.1
@@ -199,6 +210,28 @@ class WebcamStream(Node):
         while not self.camera_node_set_parameters_cli.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('service not available, waiting again...')
 
+        # Get all frames in tf tree
+        self.tfBuffer = tf2_ros.Buffer()
+        self.staticTfBroadcaster = tf2_ros.StaticTransformBroadcaster(self)
+
+    def get_tf_frames(self):
+        return self.tfBuffer.all_frames_as_yaml()
+
+    def send_transform(self, T, parent_frame, child_frame):
+        t = tf2_ros.TransformStamped()
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id = parent_frame
+        t.child_frame_id = child_frame
+        t.transform.translation.x = T[0, 3]
+        t.transform.translation.y = T[1, 3]
+        t.transform.translation.z = T[2, 3]
+        q = pr.quaternion_from_matrix(T[:3, :3])
+        t.transform.rotation.x = q[1]
+        t.transform.rotation.y = q[2]
+        t.transform.rotation.z = q[3]
+        t.transform.rotation.w = q[0]
+        self.staticTfBroadcaster.sendTransform(t)
+
     def set_camera_params(self):
 
         req = SetParameters.Request()
@@ -254,6 +287,9 @@ class WebcamStream(Node):
         # self.annotated_rgb_image = self.rgb_image
         self.annotated_rgb_image = results[0].plot().astype(np.uint8)
 
+    def zoom(self, zoom_vel):
+        self.zoom_goal = self.zoom_pos + zoom_vel
+
     def twist_pub_timer_callback(self):
         # Do not publish if all twist values are zero
         px0 = self.pan_pos[0]
@@ -261,22 +297,57 @@ class WebcamStream(Node):
         vx0 = self.pan_vel[0]
         ax = (self.k_p * (gx - px0) - self.c_p * vx0) / self.m
         vx1 = vx0 + ax * self.twist_pub_timer_period
+        if abs(vx1) < 0.01:
+            vx1 = 0.0
+        elif vx1 > 0.0:
+            vx1 = min(round(vx1, 3), self.pan_vel_max[0])
+        else:
+            vx1 = max(round(vx1, 3), -self.pan_vel_max[0])
         px1 = px0 + vx1 * self.twist_pub_timer_period
+
         py0 = self.pan_pos[1]
         gy = self.pan_goal[1]
         vy0 = self.pan_vel[1]
         ay = (self.k_p * (gy - py0) - self.c_p * vy0) / self.m
         vy1 = vy0 + ay * self.twist_pub_timer_period
+        if abs(vy1) < 0.01:
+            vy1 = 0.0
+        elif vy1 > 0.0:
+            vy1 = min(round(vy1, 3), self.pan_vel_max[1])
+        else:
+            vy1 = max(round(vy1, 3), -self.pan_vel_max[1])
         py1 = py0 + vy1 * self.twist_pub_timer_period
-        # Round to 3 decimal places
-        vx1 = round(vx1, 2)
-        vy1 = round(vy1, 2)
-        px1 = round(px1, 2)
-        py1 = round(py1, 2)
-        self.pan_vel = (vx1, vy1)
-        self.pan_pos = (px1, py1)
 
-        print(f'Vx: {vx1}, Vy: {vy1}')
+        py1 = round(py1, 3)
+
+        pz0 = self.zoom_pos
+        gz = self.zoom_goal
+        vz0 = self.zoom_vel
+        az = (self.k_p * (gz - pz0) - self.c_p * vz0) / self.m
+        vz1 = vz0 + az * self.twist_pub_timer_period
+        if abs(vz1) < 0.01:
+            vz1 = 0.0
+        elif vz1 > 0.0:
+            vz1 = min(round(vz1, 3), self.zoom_vel_max)
+        else:
+            vz1 = max(round(vz1, 3), -self.zoom_vel_max)
+        pz1 = pz0 + vz1 * self.twist_pub_timer_period
+        # Round to 3 decimal places
+
+        px1 = round(px1, 3)
+        py1 = round(py1, 3)
+        pz1 = round(pz1, 3)
+
+        self.pan_pos = (px1, py1)
+        self.pan_vel = (vx1, vy1)
+
+        self.zoom_pos = pz1
+        self.zoom_vel = vz1
+        self.zoom_goal = pz1
+
+        self.twist.twist.linear.x = vx1
+        self.twist.twist.linear.y = vy1
+        self.twist.twist.linear.z = vz1
 
         self.twist.header.stamp = self.get_clock().now().to_msg()
         self.twist_pub.publish(self.twist)
