@@ -2,6 +2,7 @@
 import rclpy
 
 import os
+import yaml
 import platform
 import cv2  # OpenCV library
 import open3d as o3d
@@ -13,15 +14,17 @@ import matplotlib.pyplot as plt
 from matplotlib import colormaps
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from io import BytesIO
+from multiprocessing import Process, Queue
 from inspection_gui.ros_thread import RosThread
 from inspection_gui.reconstruct import ReconstructThread
+from inspection_gui.partitioner import Partitioner, NPCD
 
 plt.style.use('dark_background')
 
 isMacOS = (platform.system() == "Darwin")
 
 
-class MyGui:
+class MyGui():
     MENU_OPEN = 1
     MENU_SAVE = 2
     MENU_SAVE_AS = 3
@@ -46,20 +49,26 @@ class MyGui:
     MONITOR_TAB = 1
 
     def __init__(self, update_delay=-1):
+
+        self.config_file = os.path.expanduser(
+            '~/Inspection/Parts/config/default.yaml')
+        self.config_dict = yaml.load(
+            open(self.config_file), Loader=yaml.FullLoader)
+
         self.update_delay = update_delay
         self.is_done = False
         self.lock = threading.Lock()
 
         self.app = gui.Application.instance
 
-        icons_font = gui.FontDescription(
-            '/tmp/MaterialIcons-Regular.ttf', point_size=12)
-        icons_font.add_typeface_for_code_points(
-            '/tmp/MaterialIcons-Regular.ttf', [0xE037, 0xE034])
-        icons_font_id = gui.Application.instance.add_font(icons_font)
+        # icons_font = gui.FontDescription(
+        #     '/tmp/MaterialIcons-Regular.ttf', point_size=12)
+        # icons_font.add_typeface_for_code_points(
+        #     '/tmp/MaterialIcons-Regular.ttf', [0xE037, 0xE034])
+        # icons_font_id = gui.Application.instance.add_font(icons_font)
 
         self.window = self.app.create_window(
-            "Inspection Viz-I-Vizard", width=1920, height=1080, x=0, y=30)
+            "Inspection GUI", width=1920, height=1080, x=0, y=30)
 
         em = self.window.theme.font_size
         r = self.window.content_rect
@@ -91,17 +100,126 @@ class MyGui:
         self.ros_thread.start()  # processing frames in input stream
         self.reconstruct_thread.start()  # processing frames in input stream
 
+        # 3D SCENE ################################################################
+        self.scene_widget = gui.SceneWidget()
+        self.scene_widget.scene = o3d.visualization.rendering.Open3DScene(
+            self.window.renderer)
+        self.scene_widget.scene.set_background(self.background_color)
+        self.scene_widget.enable_scene_caching(False)
+
+        # MAIN TABS ################################################################
+
         self.main_tabs = gui.TabControl()
         self.main_tabs.background_color = self.panel_color
 
-        # 3D SCENE TAB ################################################################
+        # 3D SCENE TAB ####################
+
+        # Add XY Axes
+
+        self.xy_axes = o3d.geometry.LineSet()
+        self.xy_axes.points = o3d.utility.Vector3dVector(
+            np.array([[-1000, 0, 0], [1000, 0, 0], [0, -1000, 0], [0, 1000, 0]]))
+        self.xy_axes.lines = o3d.utility.Vector2iVector(
+            np.array([[0, 1], [2, 3]]))
+        self.xy_axes.colors = o3d.utility.Vector3dVector(
+            np.array([[1, 0, 0], [0, 1, 0]]))
+
+        # Part Model
+        self.part_model_name = "Part Model"
+        self.part_model = None
+        self.part_model_units = self.config_dict['part']['model_units']
+
+        self.part_model_material = o3d.visualization.rendering.MaterialRecord()
+        self.part_model_material.shader = "defaultLit"
+        self.part_model_material.base_color = [
+            0.8, 0.8, 0.8, 1.0]  # RGBA, Red color
+
+        part_model_file = self.config_dict['part']['model']
+
+        # Part Point Cloud
+        self.part_point_cloud_name = "Part Point Cloud"
+        self.part_point_cloud = None
+        self.part_point_cloud_units = self.config_dict['part']['point_cloud_units']
+
+        self.part_point_cloud_material = o3d.visualization.rendering.MaterialRecord()
+        self.part_point_cloud_material.shader = 'defaultUnlit'
+        self.part_point_cloud_material.base_color = [1.0, 1.0, 1.0, 1.0]
+        self.part_point_cloud_material.point_size = 8.0
+
+        part_pcd_file = self.config_dict['part']['point_cloud']
+
+        # Viewpoints etc.
+        self.viewpoint_material = o3d.visualization.rendering.MaterialRecord()
+        self.viewpoint_material.shader = 'defaultUnlit'
+        self.viewpoint_material.base_color = [1.0, 1.0, 1.0, 1.0]
+
+        self.line_material = o3d.visualization.rendering.MaterialRecord()
+        self.line_material.shader = 'unlitLine'
+        self.line_material.base_color = [1.0, 1.0, 1.0, 1.0]
+        self.line_material.line_width = 2.0
+
+        # Live Point Cloud
+        self.live_point_cloud_name = "Point Cloud"
+
+        self.live_point_cloud_material = o3d.visualization.rendering.MaterialRecord()
+        self.live_point_cloud_material.shader = 'defaultUnlit'
+        self.live_point_cloud_material.base_color = [1.0, 1.0, 1.0, 1.0]
+        self.live_point_cloud_material.point_size = 5.0
+
+        # Add geometry
+        if part_model_file is not None:
+            self._import_model(part_model_file)
+        if part_pcd_file is not None:
+            self._import_point_cloud(part_pcd_file)
+
+        # Scene ribbon
+
+        def _on_part_model_file_edit(path):
+            self._import_model(path)
+
+        def _on_part_pcd_file_edit(path):
+            self._import_point_cloud(path)
+
+        def _on_part_model_units_select(value, i):
+            self.part_model_units = value
+
+        def _on_part_pcd_units_select(value, i):
+            self.part_point_cloud_units = value
 
         # Tab buttons
         self.scene_ribbon = gui.Horiz(0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
-        button = gui.Button("Scan")
+        load_part_button = gui.Button("Load Part")
+        part_model_file_edit = gui.TextEdit()
+        part_model_file_edit.placeholder_text = "/path/to/model.stl"
+        part_model_file_edit.text_value = part_model_file
+        part_model_file_edit.set_on_value_changed(_on_part_model_file_edit)
+        part_model_units_select = gui.Combobox()
+        part_model_units_select.add_item("mm")
+        part_model_units_select.add_item("cm")
+        part_model_units_select.add_item("m")
+        part_model_units_select.add_item("in")
+        part_model_units_select.set_on_selection_changed(
+            _on_part_model_units_select)
+        part_pcd_file_edit = gui.TextEdit()
+        part_pcd_file_edit.placeholder_text = "/path/to/pcd.ply"
+        part_pcd_file_edit.text_value = part_pcd_file
+        part_pcd_file_edit.set_on_value_changed(_on_part_pcd_file_edit)
+        part_pcd_units_select = gui.Combobox()
+        part_pcd_units_select.add_item("mm")
+        part_pcd_units_select.add_item("cm")
+        part_pcd_units_select.add_item("m")
+        part_pcd_units_select.add_item("in")
+        part_pcd_units_select.set_on_selection_changed(
+            _on_part_pcd_units_select)
 
-        # Scene ribbon
+        grid = gui.VGrid(3, 0.25 * em)
+        grid.add_child(gui.Label("Model: "))
+        grid.add_child(part_model_file_edit)
+        grid.add_child(part_model_units_select)
+        grid.add_child(gui.Label("Point Cloud: "))
+        grid.add_child(part_pcd_file_edit)
+        grid.add_child(part_pcd_units_select)
 
         # Attempt to add Material Icons to button
         # 0xE037, 0xE034
@@ -112,40 +230,13 @@ class MyGui:
         part_frame_button = gui.Button('v')
         part_frame_button.toggleable = True
 
-        self.scene_ribbon.add_child(gui.Label("Scan: "))
-        self.scene_ribbon.add_child(button)
+        self.scene_ribbon.add_child(load_part_button)
         self.scene_ribbon.add_fixed(0.5 * em)
+        self.scene_ribbon.add_child(grid)
+        self.scene_ribbon.add_fixed(50 * em)
         self.scene_ribbon.add_child(play_button)
         self.scene_ribbon.add_fixed(0.5 * em)
         self.scene_ribbon.add_child(stop_button)
-
-        self.scene_widget = gui.SceneWidget()
-        self.scene_widget.scene = o3d.visualization.rendering.Open3DScene(
-            self.window.renderer)
-        self.scene_widget.scene.set_background(self.background_color)
-        self.scene_widget.enable_scene_caching(False)
-
-        # self.window.add_child(self.scene_widget)
-        self.scene_widget.scene.show_axes(False)
-        self.scene_widget.scene.show_ground_plane(
-            True, o3d.visualization.rendering.Scene.GroundPlane.XY)
-
-        self.geom_pcd = MyGui.generate_point_cloud()
-        self.geom_pcd.colors = o3d.utility.Vector3dVector(
-            np.zeros_like(self.geom_pcd.points))
-
-        self.live_point_cloud_name = "Point Cloud"
-        self.live_point_cloud_material = o3d.visualization.rendering.MaterialRecord()
-        self.live_point_cloud_material.shader = 'defaultUnlit'
-        self.live_point_cloud_material.point_size = 5.0
-
-        self.scene_widget.scene.add_geometry(
-            self.live_point_cloud_name, self.geom_pcd, self.live_point_cloud_material)
-
-        self.scene_widget.setup_camera(
-            60, self.scene_widget.scene.bounding_box, [0, 0, 0])
-        self.scene_widget.set_view_controls(
-            gui.SceneWidget.Controls.ROTATE_CAMERA)
 
         # STEREO CAMERA PANEL #########################################################
 
@@ -211,19 +302,22 @@ class MyGui:
 
         # origin_frame_dropdown = gui.Combobox()
 
-        x = 0.5
-        y = 0.0
-        z = 0.0
-        roll = 0.0
-        pitch = 0.0
-        yaw = 0.0
+        self.part_frame_parent = self.config_dict['part']['frame']['parent']
+        self.part_frame = self.config_dict['part']['frame']['child']
+        x = self.config_dict['part']['frame']['x']
+        y = self.config_dict['part']['frame']['y']
+        z = self.config_dict['part']['frame']['z']
+        roll = self.config_dict['part']['frame']['roll']
+        pitch = self.config_dict['part']['frame']['pitch']
+        yaw = self.config_dict['part']['frame']['yaw']
 
         T = np.eye(4)
         T[0:3, 3] = [x, y, z]
         T[0:3, 0:3] = o3d.geometry.get_rotation_matrix_from_xyz(
             [roll, pitch, yaw])
 
-        self.ros_thread.send_transform(T, 'world', 'part_frame')
+        self.ros_thread.send_transform(
+            T, self.part_frame_parent, self.part_frame)
 
         def _on_part_x_edit(x):
             self.part_x_edit.double_value = x
@@ -283,11 +377,91 @@ class MyGui:
 
         self.part_frame_panel.add_child(grid)
 
-        # VIEWPOINT GENERATION PANEL ###############################################
+        # CAMERA FRAME PANEL ############################################################
 
-        self.viewpoint_panel = gui.CollapsableVert("Viewpoint Generation", 0, gui.Margins(
+        self.camera_frame_panel = gui.CollapsableVert("Camera Frame", 0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
-        self.viewpoint_panel.background_color = self.panel_color
+        self.camera_frame_panel.background_color = self.panel_color
+        self.camera_frame_panel.set_is_open(False)
+
+        # origin_frame_dropdown = gui.Combobox()
+
+        self.camera_frame_parent = self.config_dict['camera']['frame']['parent']
+        self.camera_frame = self.config_dict['camera']['frame']['child']
+        x = self.config_dict['camera']['frame']['x']
+        y = self.config_dict['camera']['frame']['y']
+        z = self.config_dict['camera']['frame']['z']
+        roll = self.config_dict['camera']['frame']['roll']
+        pitch = self.config_dict['camera']['frame']['pitch']
+        yaw = self.config_dict['camera']['frame']['yaw']
+
+        T = np.eye(4)
+        T[0:3, 3] = [x, y, z]
+        T[0:3, 0:3] = o3d.geometry.get_rotation_matrix_from_xyz(
+            [roll, pitch, yaw])
+
+        self.ros_thread.send_transform(
+            T, self.camera_frame_parent, self.camera_frame)
+
+        def _on_camera_x_edit(x):
+            self.camera_x_edit.double_value = x
+            self._get_and_send_camera_frame_tf()
+
+        def _on_camera_y_edit(y):
+            self.camera_y_edit.double_value = y
+            self._get_and_send_camera_frame_tf()
+
+        def _on_camera_z_edit(z):
+            self.camera_z_edit.double_value = z
+            self._get_and_send_camera_frame_tf()
+
+        def _on_camera_roll_edit(roll):
+            self.camera_roll_edit.double_value = roll
+            self._get_and_send_camera_frame_tf()
+
+        def _on_camera_pitch_edit(pitch):
+            self.camera_pitch_edit.double_value = pitch
+            self._get_and_send_camera_frame_tf()
+
+        def _on_camera_yaw_edit(yaw):
+            self.camera_yaw_edit.double_value = yaw
+            self._get_and_send_camera_frame_tf()
+
+        grid = gui.VGrid(2, 0.25 * em)
+        grid.add_child(gui.Label("X: "))
+        self.camera_x_edit = gui.NumberEdit(gui.NumberEdit.DOUBLE)
+        self.camera_x_edit.double_value = x
+        self.camera_x_edit.set_on_value_changed(_on_camera_x_edit)
+        grid.add_child(self.camera_x_edit)
+        grid.add_child(gui.Label("Y: "))
+        self.camera_y_edit = gui.NumberEdit(gui.NumberEdit.DOUBLE)
+        self.camera_y_edit.double_value = y
+        self.camera_y_edit.set_on_value_changed(_on_camera_y_edit)
+        grid.add_child(self.camera_y_edit)
+        grid.add_child(gui.Label("Z: "))
+        self.camera_z_edit = gui.NumberEdit(gui.NumberEdit.DOUBLE)
+        self.camera_z_edit.double_value = z
+        self.camera_z_edit.set_on_value_changed(_on_camera_z_edit)
+        grid.add_child(self.camera_z_edit)
+        grid.add_child(gui.Label("Roll: "))
+        self.camera_roll_edit = gui.NumberEdit(gui.NumberEdit.DOUBLE)
+        self.camera_roll_edit.double_value = roll
+        self.camera_roll_edit.set_on_value_changed(_on_camera_roll_edit)
+        grid.add_child(self.camera_roll_edit)
+        grid.add_child(gui.Label("Pitch: "))
+        self.camera_pitch_edit = gui.NumberEdit(gui.NumberEdit.DOUBLE)
+        self.camera_pitch_edit.double_value = pitch
+        self.camera_pitch_edit.set_on_value_changed(_on_camera_pitch_edit)
+        grid.add_child(self.camera_pitch_edit)
+        grid.add_child(gui.Label("Yaw: "))
+        self.camera_yaw_edit = gui.NumberEdit(gui.NumberEdit.DOUBLE)
+        self.camera_yaw_edit.double_value = yaw
+        self.camera_yaw_edit.set_on_value_changed(_on_camera_yaw_edit)
+        grid.add_child(self.camera_yaw_edit)
+
+        self.camera_frame_panel.add_child(grid)
+
+        # VIEWPOINT GENERATION PANEL ###############################################
 
         # INSPECTION ACTION PANEL ##################################################
 
@@ -295,31 +469,160 @@ class MyGui:
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
         self.action_panel.background_color = self.panel_color
 
-        fov_grid = gui.VGrid(2, 0.25 * em)
-        fov_grid.add_child(gui.Label("width: "))
+        # VIEWPOINT GENERATION ######################
+
+        self.fov_width_px = self.config_dict['camera']['fov']['width_px']
+        self.fov_height_px = self.config_dict['camera']['fov']['height_px']
+        self.fov_width_mm = self.config_dict['camera']['fov']['width_mm']
+        self.fov_height_mm = self.config_dict['camera']['fov']['height_mm']
+        self.roi_width = self.config_dict['camera']['roi']['width']
+        self.roi_height = self.config_dict['camera']['roi']['height']
+        self.dof = self.config_dict['camera']['dof_mm']
+        self.focal_distance = self.config_dict['camera']['focal_distance_mm']
+
+        # PARTITIONER SETTINGS
+        self.viewpoint_dict = None
+        self.partitioner = Partitioner()
+
+        self.partitioner.fov_height = self.fov_height_mm * \
+            (self.roi_height/self.fov_height_px) / 10
+
+        self.partitioner.fov_width = self.fov_width_mm * \
+            (self.roi_width/self.fov_width_px) / 10
+
+        self.partitioner.focal_distance = self.focal_distance / 10
+
+        # self.partitioning_progress_queue = Queue()
+        # self.partitioning_results_queue = Queue()
+
+        # npcd = NPCD.from_o3d_point_cloud(o3d.geometry.PointCloud())
+
+        # self.partitioning_process = Process(
+        #     target=self.partitioner.rg_not_smart_partition_worker, args=(npcd,
+        #                                                                  self.partitioning_progress_queue,
+        #                                                                  self.partitioning_results_queue))
+
+        def _on_fov_width_mm_edit(value):
+            self.fov_width_mm = value
+            self.partitioner.fov_width = self.fov_width_mm * \
+                (self.roi_width/self.fov_width_px)
+
+        def _on_fov_height_mm_edit(value):
+            self.fov_height_mm = value
+            self.partitioner.fov_height = self.fov_height_mm * \
+                (self.roi_height/self.fov_height_px)
+
+        def _on_fov_width_px_edit(value):
+            self.fov_width_px = value
+            self.partitioner.fov_width = self.fov_width_mm * \
+                (self.roi_width/self.fov_width_px)
+
+        def _on_fov_height_px_edit(value):
+            self.fov_height_px = value
+            self.partitioner.fov_height = self.fov_height_mm * \
+                (self.roi_height/self.fov_height_px)
+
+        def _on_roi_width_px_edit(value):
+            self.roi_width = value
+            self.partitioner.fov_width = self.fov_width_mm * \
+                (self.roi_width/self.fov_width_px)
+
+        def _on_roi_height_edit(value):
+            self.roi_height = value
+            self.partitioner.fov_height = self.fov_height_mm * \
+                (self.roi_height/self.fov_height_px)
+
+        def _on_dof_edit(value):
+            self.config_dict['camera']['dof'] = value
+            self.dof = value
+            self.partitioner.dof = value
+
+        def _on_focal_distance_edit(value):
+            self.config_dict['camera']['focal_distance_mm'] = value
+            self.focal_distance = value
+            self.partitioner.focal_distance = value
+
+        def _on_viewpoint_generation_button_clicked():
+            # npcd = NPCD.from_o3d_point_cloud(self.part_point_cloud)
+            # self.partitioning_process = Process(
+            #     target=self.partitioner.rg_not_smart_partition_worker, args=(npcd,
+            #                                                                  self.partitioning_progress_queue,
+            #                                                                  self.partitioning_results_queue))
+            # self.partitioning_process.start(self.part_point_cloud)
+            self.viewpoint_dict = None
+            self.viewpoint_stack.selected_index = 0
+            self.part_point_cloud.paint_uniform_color([0.8, 0.8, 0.8])
+            self.partitioner.run(self.part_point_cloud)
+            self.generate_viewpoints_button.enabled = False
+
+        fov_px_grid = gui.VGrid(2, 0.25 * em)
+        fov_px_grid.add_child(gui.Label("width (px): "))
+        width_edit = gui.NumberEdit(gui.NumberEdit.Type.INT)
+        width_edit.set_on_value_changed(_on_fov_width_px_edit)
+        width_edit.int_value = self.fov_width_px
+        fov_px_grid.add_child(width_edit)
+        fov_px_grid.add_child(gui.Label("height (px): "))
+        height_edit = gui.NumberEdit(gui.NumberEdit.Type.INT)
+        height_edit.set_on_value_changed(_on_fov_height_px_edit)
+        height_edit.int_value = self.fov_height_px
+        fov_px_grid.add_child(height_edit)
+
+        fov_mm_grid = gui.VGrid(2, 0.25 * em)
+        fov_mm_grid.add_child(gui.Label("width (mm): "))
         width_edit = gui.NumberEdit(gui.NumberEdit.Type.DOUBLE)
-        fov_grid.add_child(width_edit)
-        fov_grid.add_child(gui.Label("height: "))
+        width_edit.set_on_value_changed(_on_fov_width_mm_edit)
+        width_edit.double_value = self.fov_width_mm
+        fov_mm_grid.add_child(width_edit)
+        fov_mm_grid.add_child(gui.Label("height (mm): "))
         height_edit = gui.NumberEdit(gui.NumberEdit.Type.DOUBLE)
-        fov_grid.add_child(height_edit)
+        height_edit.set_on_value_changed(_on_fov_height_mm_edit)
+        height_edit.double_value = self.fov_height_mm
+        fov_mm_grid.add_child(height_edit)
 
         roi_grid = gui.VGrid(2, 0.25 * em)
-        roi_grid.add_child(gui.Label("width: "))
+        roi_grid.add_child(gui.Label("width (px): "))
         width_edit = gui.NumberEdit(gui.NumberEdit.Type.INT)
+        width_edit.set_on_value_changed(_on_roi_width_px_edit)
+        width_edit.int_value = self.roi_width
         roi_grid.add_child(width_edit)
-        roi_grid.add_child(gui.Label("height: "))
+        roi_grid.add_child(gui.Label("height (px): "))
         height_edit = gui.NumberEdit(gui.NumberEdit.Type.INT)
+        height_edit.set_on_value_changed(_on_roi_height_edit)
+        height_edit.int_value = self.roi_height
         roi_grid.add_child(height_edit)
 
-        viewpoint_slider = gui.Slider(gui.Slider.INT)
-        viewpoint_slider.set_limits(0, 100)
-        viewpoint_slider.enabled = False
+        dof_edit = gui.NumberEdit(gui.NumberEdit.Type.DOUBLE)
+        dof_edit.double_value = self.dof
+        dof_edit.set_on_value_changed(_on_dof_edit)
+        focal_distance_edit = gui.NumberEdit(gui.NumberEdit.Type.DOUBLE)
+        focal_distance_edit.double_value = self.focal_distance
+        focal_distance_edit.set_on_value_changed(_on_focal_distance_edit)
+
+        dof_focal_distance_grid = gui.VGrid(2, 0.25 * em)
+        dof_focal_distance_grid.add_child(gui.Label("Depth of focus (mm): "))
+        dof_focal_distance_grid.add_child(dof_edit)
+        dof_focal_distance_grid.add_child(gui.Label("Focal distance (mm): "))
+        dof_focal_distance_grid.add_child(focal_distance_edit)
+
+        self.generate_viewpoints_button = gui.Button("Generate Viewpoints")
+        self.generate_viewpoints_button.set_on_clicked(
+            _on_viewpoint_generation_button_clicked)
+
+        self.viewpoint_stack = gui.StackedWidget()
+        self.viewpoint_progress_bar = gui.ProgressBar()
+        self.viewpoint_progress_bar.background_color = gui.Color(0, 1, 0, 0.8)
+        self.viewpoint_slider = gui.Slider(gui.Slider.INT)
+        self.viewpoint_slider.set_limits(0, 100)
+        self.viewpoint_slider.enabled = False
+        self.viewpoint_stack.add_child(self.viewpoint_progress_bar)
+        self.viewpoint_stack.add_child(self.viewpoint_slider)
+        self.viewpoint_stack.selected_index = 0
         action_grid = gui.Vert(0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
         horiz = gui.Horiz(0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
         horiz.add_child(gui.Label("Viewpoint: "))
-        horiz.add_child(viewpoint_slider)
+        horiz.add_child(self.viewpoint_stack)
         action_grid.add_child(horiz)
         horiz = gui.Horiz(0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
@@ -338,15 +641,19 @@ class MyGui:
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
         horiz.add_child(gui.Label("FOV: "))
         horiz.add_fixed(0.5 * em)
-        horiz.add_child(fov_grid)
+        horiz.add_child(fov_mm_grid)
+        horiz.add_fixed(0.5 * em)
+        horiz.add_child(fov_px_grid)
         horiz.add_fixed(0.5 * em)
         horiz.add_child(gui.Label("ROI: "))
         horiz.add_fixed(0.5 * em)
         horiz.add_child(roi_grid)
         horiz.add_fixed(0.5 * em)
-        horiz.add_child(gui.Button("Generate Viewpoints"))
+        horiz.add_child(dof_focal_distance_grid)
+        horiz.add_fixed(0.5 * em)
+        horiz.add_child(self.generate_viewpoints_button)
         # horiz.add_fixed(self.window.content_rect.width/2)
-        horiz.add_fixed(10 * em)
+        horiz.add_fixed(0.5 * em)
         horiz.add_child(action_grid)
         horiz.add_fixed(0.5 * em)
         horiz.add_child(gui.Button("Move"))
@@ -358,7 +665,6 @@ class MyGui:
         horiz.add_child(go_button)
 
         self.action_panel.add_child(horiz)
-
         # LOG PANEL ################################################################
 
         self.log_panel = gui.CollapsableVert("Log", 0, gui.Margins(
@@ -373,16 +679,8 @@ class MyGui:
         self.log_list = ["Log 1"]
         self.ros_log_text.set_items(self.log_list)
         self.ros_log_text.selected_index = 0
-        # ros_log_vert.add_child(self.ros_log_text)
-        # self.log_panel.add_child(ros_log_vert)
         self.log_panel.add_child(self.ros_log_text)
         self.log_panel.set_is_open(False)
-
-        # webcam_vert.add_child(webcam_horiz)
-        # grid.add_child(webcam_horiz)
-        # self.stereo_camera_panel.add_child(webcam_vert)
-
-        # self.scene_widget.add_child(self.stereo_camera_panel)
 
         # MONITOR TAB ################################################################
 
@@ -486,19 +784,6 @@ class MyGui:
         self.camera_config_panel.add_child(svert)
         # self.monitor_widget.add_child(self.camera_config_panel)
         # self.monitor_widget.add_child(self.monitor_image_widget)
-
-        self.main_tabs.add_tab("3D Scene", self.scene_ribbon)
-        self.main_tabs.add_tab("Monitor", self.monitor_ribbon)
-
-        self.window.add_child(self.scene_widget)
-        self.window.add_child(self.monitor_image_panel)
-        self.window.add_child(self.main_tabs)
-        self.window.add_child(self.stereo_camera_panel)
-        self.window.add_child(self.part_frame_panel)
-        self.window.add_child(self.action_panel)
-        self.window.add_child(self.log_panel)
-        self.window.add_child(self.camera_config_panel)
-        self.window.set_on_layout(self._on_layout)
 
         # ---- Menu ----
         # The menu is global (because the macOS menu is global), so only create
@@ -629,24 +914,78 @@ class MyGui:
             MyGui.MENU_ABOUT, self._on_menu_about)
         # ----
 
-        # ---- UI panels ----
-        em = w.theme.font_size
-        separation_height = int(round(0.5 * em))
+        self._reset_scene()
 
-        # Update this path to your image file
+        self.scene_widget.setup_camera(
+            60, self.scene_widget.scene.bounding_box, [1, 0, 0])
+        self.scene_widget.set_view_controls(
+            gui.SceneWidget.Controls.ROTATE_CAMERA)
+        self.scene_widget.scene.show_axes(False)
+        self.scene_widget.scene.show_ground_plane(
+            True, o3d.visualization.rendering.Scene.GroundPlane.XY)
 
-        # Step 2: Create a material for the self.part_model (optional)
-        self.part_model_name = "Part Model"
-        self.part_model_material = o3d.visualization.rendering.MaterialRecord()
-        self.part_model_material.base_color = [
-            0.8, 0.8, 0.8, 1.0]  # RGBA, Red color
-        self.part_model_material.shader = "defaultLit"
+        self.main_tabs.add_tab("3D Scene", self.scene_ribbon)
+        self.main_tabs.add_tab("Monitor", self.monitor_ribbon)
 
-        # Point Cloud
-        self.part_point_cloud_name = "Part Point Cloud"
+        self.window.add_child(self.scene_widget)
+        self.window.add_child(self.monitor_image_panel)
+        self.window.add_child(self.main_tabs)
+        self.window.add_child(self.stereo_camera_panel)
+        self.window.add_child(self.part_frame_panel)
+        self.window.add_child(self.camera_frame_panel)
+        self.window.add_child(self.action_panel)
+        self.window.add_child(self.log_panel)
+        self.window.add_child(self.camera_config_panel)
+        self.window.set_on_layout(self._on_layout)
+
+    def _reset_scene(self):
+        self.scene_widget.scene.clear_geometry()
+        self.scene_widget.scene.add_geometry(
+            'xy axes', self.xy_axes, self.line_material)
+        if self.part_model is not None:
+            self.scene_widget.scene.add_geometry(
+                self.part_model_name, self.part_model, self.part_model_material)
+        if self.part_point_cloud is not None:
+            self.scene_widget.scene.add_geometry(
+                self.part_point_cloud_name, self.part_point_cloud, self.part_point_cloud_material)
+
+    def _send_transform(self, T, parent, child):
+        self.ros_thread.send_transform(T, parent, child)
+
+    def _import_model(self, path):
+        try:
+            self.part_model = o3d.io.read_triangle_mesh(path)
+        except:
+            print("Error reading model file")
+            return
+        if self.part_model_units == 'mm':
+            scale = 0.1
+        elif self.part_model_units == 'cm':
+            scale = 1.0
+        elif self.part_model_units == 'm':
+            scale = 100.0
+        elif self.part_model_units == 'in':
+            scale = 2.54
+        self.part_model.scale(scale, center=(0, 0, 0))
         self.part_point_cloud = None
-        self.part_point_cloud_material = o3d.visualization.rendering.MaterialRecord()
-        self.part_point_cloud_material.shader = 'defaultUnlit'
+        self._reset_scene()
+
+    def _import_point_cloud(self, path):
+        try:
+            self.part_point_cloud = o3d.io.read_point_cloud(path)
+        except:
+            print("Error reading point_cloud file")
+            return
+        if self.part_point_cloud_units == 'mm':
+            scale = 0.1
+        elif self.part_point_cloud_units == 'cm':
+            scale = 1.0
+        elif self.part_point_cloud_units == 'm':
+            scale = 100.0
+        elif self.part_point_cloud_units == 'in':
+            scale = 2.54
+        self.part_point_cloud.scale(scale, center=(0, 0, 0))
+        self._reset_scene()
 
     def _get_and_send_part_frame_tf(self):
         x = self.part_x_edit.double_value
@@ -661,7 +1000,24 @@ class MyGui:
         T[0:3, 0:3] = o3d.geometry.get_rotation_matrix_from_xyz(
             [roll, pitch, yaw])
 
-        self.ros_thread.send_transform(T, 'world', 'part_frame')
+        self.ros_thread.send_transform(
+            T, self.part_frame_parent, self.part_frame)
+
+    def _get_and_send_camera_frame_tf(self):
+        x = self.camera_x_edit.double_value
+        y = self.camera_y_edit.double_value
+        z = self.camera_z_edit.double_value
+        roll = self.camera_roll_edit.double_value
+        pitch = self.camera_pitch_edit.double_value
+        yaw = self.camera_yaw_edit.double_value
+
+        T = np.eye(4)
+        T[0:3, 3] = [x, y, z]
+        T[0:3, 0:3] = o3d.geometry.get_rotation_matrix_from_xyz(
+            [roll, pitch, yaw])
+
+        self.ros_thread.send_transform(
+            T, self.camera_frame_parent, self.camera_frame)
 
     def _on_menu_new(self):
         pass
@@ -720,17 +1076,11 @@ class MyGui:
     def _on_import_model_dialog_done(self, path):
         self.part_model = o3d.io.read_triangle_mesh(path)
         self.part_model.scale(100, center=(0, 0, 0))
-        self.scene_widget.scene.clear_geometry()
-        self.scene_widget.scene.add_geometry(
-            self.part_model_name, self.part_model, self.part_model_material)
         self.window.close_dialog()
 
     def _on_import_pcd_dialog_done(self, path):
         self.part_point_cloud = o3d.io.read_point_cloud(path)
         self.part_point_cloud.scale(100, center=(0, 0, 0))
-        self.scene_widget.scene.remove_geometry("Point Cloud")
-        self.scene_widget.scene.add_geometry(
-            self.part_point_cloud_name, self.part_point_cloud, self.part_point_cloud_material)
         self.window.close_dialog()
 
     def _on_menu_quit(self):
@@ -818,8 +1168,8 @@ class MyGui:
         def on_model_color_changed(c):
             self.part_model_material.base_color = [
                 c.red, c.green, c.blue, c.alpha]
-            self.scene_widget.scene.modify_geometry_material(
-                self.part_model_name, self.part_model_material)
+            # self.scene_widget.scene.modify_geometry_material(
+            # self.part_model_name, self.part_model_material)
 
         model_color_edit = gui.ColorEdit()
         mmc = self.part_model_material.base_color
@@ -841,8 +1191,8 @@ class MyGui:
         def on_pcd_color_changed(c):
             self.live_point_cloud_material.base_color = [
                 c.red, c.green, c.blue, c.alpha]
-            self.scene_widget.scene.modify_geometry_material(
-                self.live_point_cloud_name, self.live_point_cloud_material)
+            # self.scene_widget.scene.modify_geometry_material(
+            # self.live_point_cloud_name, self.live_point_cloud_material)
 
         pcd_color_edit = gui.ColorEdit()
         pcdmc = self.live_point_cloud_material.base_color
@@ -852,8 +1202,8 @@ class MyGui:
 
         def on_pcd_size_changed(value):
             self.live_point_cloud_material.point_size = value
-            self.scene_widget.scene.modify_geometry_material(
-                self.live_point_cloud_name, self.live_point_cloud_material)
+            # self.scene_widget.scene.modify_geometry_material(
+            # self.live_point_cloud_name, self.live_point_cloud_material)
 
         pcd_size_edit = gui.Slider(gui.Slider.INT)
         pcd_size_edit.int_value = int(
@@ -1004,15 +1354,13 @@ class MyGui:
         self.reconstruct_thread.depth_intrinsic = depth_intrinsic
         self.reconstruct_thread.T = T
 
-        # TODO: Add switch cases to toggle between RGB, Depth, and Illuminance
-
         tab_index = self.main_tabs.selected_tab_index
 
         # REMOVE GEOMETRY ##########################################################
 
-        self.scene_widget.scene.remove_geometry("x-axis")
         self.scene_widget.scene.remove_geometry(self.live_point_cloud_name)
-        self.scene_widget.scene.remove_geometry("camera")
+        self.scene_widget.scene.remove_geometry("stereo_camera")
+        self.scene_widget.scene.remove_geometry("main_camera")
         self.scene_widget.scene.remove_geometry("light_ring")
 
         # UPDATE SCENE TAB #########################################################
@@ -1069,23 +1417,6 @@ class MyGui:
 
             # 3D SCENE WIDGET ##########################################
 
-            # Line material
-
-            line_mat = o3d.visualization.rendering.MaterialRecord()
-            line_mat.shader = 'unlitLine'
-            line_mat.line_width = 1.0
-
-            # Add XY Axes
-
-            x_axis = o3d.geometry.LineSet()
-            x_axis.points = o3d.utility.Vector3dVector(
-                np.array([[-1000, 0, 0], [1000, 0, 0], [0, -1000, 0], [0, 1000, 0]]))
-            x_axis.lines = o3d.utility.Vector2iVector(
-                np.array([[0, 1], [2, 3]]))
-            x_axis.colors = o3d.utility.Vector3dVector(
-                np.array([[1, 0, 0], [0, 1, 0]]))
-            self.scene_widget.scene.add_geometry("x-axis", x_axis, line_mat)
-
             # Add Real-time PCD
 
             self.scene_widget.scene.add_geometry(
@@ -1093,14 +1424,39 @@ class MyGui:
 
             # Add Camera
 
-            camera = o3d.geometry.LineSet().create_camera_visualization(
+            stereo_camera = o3d.geometry.LineSet().create_camera_visualization(
                 depth_intrinsic, extrinsic=np.eye(4))
-            camera.scale(self.depth_trunc, center=np.array([0, 0, 0]))
-            camera.transform(T)
-            camera.scale(100.0, center=np.array([0, 0, 0]))
-            camera.paint_uniform_color(np.array([0/255, 255/255, 255/255]))
+            stereo_camera.scale(self.depth_trunc, center=np.array([0, 0, 0]))
+            stereo_camera.transform(T)
+            stereo_camera.scale(100.0, center=np.array([0, 0, 0]))
+            stereo_camera.paint_uniform_color(
+                np.array([0/255, 255/255, 255/255]))
 
-            self.scene_widget.scene.add_geometry("camera", camera, line_mat)
+            main_camera = o3d.geometry.LineSet()
+            fov_width_m = 0.001*self.fov_width_mm * \
+                (self.roi_width/self.fov_width_px)
+            fov_height_m = 0.001*self.fov_height_mm * \
+                (self.roi_height/self.fov_height_px)
+            focal_distance_m = 0.001*self.focal_distance
+
+            o = np.array([0, 0, 0])
+            tl = [-fov_width_m/2, fov_height_m/2, focal_distance_m]
+            tr = [fov_width_m/2, fov_height_m/2, focal_distance_m]
+            bl = [-fov_width_m/2, -fov_height_m/2, focal_distance_m]
+            br = [fov_width_m/2, -fov_height_m/2, focal_distance_m]
+
+            main_camera.points = o3d.utility.Vector3dVector(
+                np.array([o, tl, tr, bl, br]))
+            main_camera.lines = o3d.utility.Vector2iVector(
+                np.array([[0, 1], [0, 2], [0, 3], [0, 4], [1, 2], [2, 4], [4, 3], [3, 1]]))
+            main_camera.transform(T)
+            main_camera.scale(100.0, center=np.array([0, 0, 0]))
+            main_camera.paint_uniform_color(np.array([255/255, 0/255, 0/255]))
+
+            self.scene_widget.scene.add_geometry(
+                "stereo_camera", stereo_camera, self.line_material)
+            self.scene_widget.scene.add_geometry(
+                "main_camera", main_camera, self.line_material)
 
             # Add Light Ring
 
@@ -1113,7 +1469,57 @@ class MyGui:
             light_ring.paint_uniform_color(np.array([255/255, 255/255, 0/255]))
 
             self.scene_widget.scene.add_geometry(
-                "light_ring", light_ring, line_mat)
+                "light_ring", light_ring, self.line_material)
+
+            # Partitioning Results
+            if self.partitioner.is_running:
+                progress = self.partitioner.progress
+                self.viewpoint_progress_bar.value = progress
+                if progress == 1.0:
+                    self.generate_viewpoints_button.enabled = True
+
+                    self.partitioner.stop()
+                    self.viewpoint_dict = self.partitioner.get_viewpoint_dict()
+                    self.scene_widget.scene.remove_geometry(
+                        self.part_point_cloud_name)
+
+                    selected_index = 0
+                    self.viewpoint_stack.selected_index = selected_index + 1
+                    self.viewpoint_slider.enabled = True
+                    self.viewpoint_slider.set_limits(
+                        1, len(self.viewpoint_dict.keys()))
+
+                    for i, (region_name, region) in enumerate(self.viewpoint_dict.items()):
+
+                        viewpoint_tf = region['viewpoint']
+                        point_cloud = region['point_cloud']
+                        origin = region['origin']
+                        point = region['point']
+
+                        if i == selected_index:
+                            color = [0/255, 255/255, 0/255]
+                        else:
+                            color = region['color']
+
+                        point_cloud.paint_uniform_color(color)
+                        viewpoint_geom = o3d.geometry.TriangleMesh.create_sphere(
+                            radius=1)
+                        viewpoint_geom.paint_uniform_color(color)
+                        viewpoint_geom.transform(viewpoint_tf)
+
+                        viewpoint_line = o3d.geometry.LineSet()
+                        viewpoint_line.points = o3d.utility.Vector3dVector(
+                            np.array([origin, point]))
+                        viewpoint_line.lines = o3d.utility.Vector2iVector(
+                            np.array([[0, 1]]))
+                        viewpoint_line.paint_uniform_color(color)
+
+                        self.scene_widget.scene.add_geometry(
+                            f"{region_name}_viewpoint", viewpoint_geom, self.viewpoint_material)
+                        self.scene_widget.scene.add_geometry(
+                            region_name, point_cloud, self.part_point_cloud_material)
+                        self.scene_widget.scene.add_geometry(
+                            f"{region_name}_line", viewpoint_line, self.line_material)
 
         # UPDATE MONITOR TAB #########################################################
 
@@ -1201,6 +1607,7 @@ class MyGui:
             self.is_done = True
 
         self.ros_thread.stop()
+        self.reconstruct_thread.stop()
 
         return True  # False would cancel the close
 
@@ -1218,7 +1625,7 @@ class MyGui:
         self.scene_widget.frame = r
 
         tab_frame_top = 1.5*em
-        tab_frame_height = 3*em
+        tab_frame_height = 3.5*em
 
         self.main_tabs.frame = gui.Rect(
             0, tab_frame_top, r.width, tab_frame_top + tab_frame_height)
@@ -1257,6 +1664,20 @@ class MyGui:
 
         self.part_frame_panel.frame = gui.Rect(left, top, width, height)
 
+        # camera Frame Panel
+
+        width = self.camera_frame_panel.calc_preferred_size(
+            layout_context, gui.Widget.Constraints()).width
+        height = self.camera_frame_panel.calc_preferred_size(
+            layout_context, gui.Widget.Constraints()).height
+        if height < 10 * em:
+            width = 7.5 * em
+
+        top = self.part_frame_panel.frame.get_bottom() + 2*em
+        left = r.width - width
+
+        self.camera_frame_panel.frame = gui.Rect(left, top, width, height)
+
         # Log Panel
 
         max_height = 10 * em
@@ -1288,15 +1709,15 @@ class MyGui:
             0, main_frame_top, r.width, height)
 
 
-def main():
-    rclpy.init()
+def main(args=None):
+    rclpy.init(args=args)
+    print(args)
 
     gui.Application.instance.initialize()
 
     thread_delay = 0.1
     use_tick = -1
 
-    time.sleep(2)
     dpcApp = MyGui(use_tick)
     dpcApp.startThread()
 
