@@ -142,7 +142,7 @@ class MyGui():
         self.part_point_cloud_units = self.config_dict['part']['point_cloud_units']
 
         self.part_point_cloud_material = o3d.visualization.rendering.MaterialRecord()
-        self.part_point_cloud_material.shader = 'defaultUnlit'
+        self.part_point_cloud_material.shader = 'defaultLit'
         self.part_point_cloud_material.base_color = [1.0, 1.0, 1.0, 1.0]
         self.part_point_cloud_material.point_size = 8.0
 
@@ -611,9 +611,85 @@ class MyGui():
         self.viewpoint_stack = gui.StackedWidget()
         self.viewpoint_progress_bar = gui.ProgressBar()
         self.viewpoint_progress_bar.background_color = gui.Color(0, 1, 0, 0.8)
+
+        def _on_viewpoint_slider_changed(value):
+
+            old_region_name = f"region_{self.selected_viewpoint}"
+            self.scene_widget.scene.remove_geometry(old_region_name)
+            self.scene_widget.scene.remove_geometry(f"{old_region_name}_line")
+            self.scene_widget.scene.remove_geometry(
+                f"{old_region_name}_viewpoint")
+
+            old_region = self.viewpoint_dict[old_region_name]
+
+            viewpoint_tf = old_region['viewpoint']
+            point_cloud = old_region['point_cloud']
+            origin = old_region['origin']
+            point = old_region['point']
+            color = old_region['color']
+
+            point_cloud.paint_uniform_color(color)
+            viewpoint_geom = o3d.geometry.TriangleMesh.create_sphere(
+                radius=1)
+            viewpoint_geom.paint_uniform_color(color)
+            viewpoint_geom.transform(viewpoint_tf)
+
+            viewpoint_line = o3d.geometry.LineSet()
+            viewpoint_line.points = o3d.utility.Vector3dVector(
+                np.array([origin, point]))
+            viewpoint_line.lines = o3d.utility.Vector2iVector(
+                np.array([[0, 1]]))
+            viewpoint_line.paint_uniform_color(color)
+
+            self.scene_widget.scene.add_geometry(
+                f"{old_region_name}_viewpoint", viewpoint_geom, self.viewpoint_material)
+            self.scene_widget.scene.add_geometry(
+                old_region_name, point_cloud, self.part_point_cloud_material)
+            self.scene_widget.scene.add_geometry(
+                f"{old_region_name}_line", viewpoint_line, self.line_material)
+
+            self.selected_viewpoint = int(value-1)
+
+            new_region_name = f"region_{self.selected_viewpoint}"
+            self.scene_widget.scene.remove_geometry(new_region_name)
+            self.scene_widget.scene.remove_geometry(f"{new_region_name}_line")
+            self.scene_widget.scene.remove_geometry(
+                f"{new_region_name}_viewpoint")
+
+            new_region = self.viewpoint_dict[new_region_name]
+
+            viewpoint_tf = new_region['viewpoint']
+            point_cloud = new_region['point_cloud']
+            origin = new_region['origin']
+            point = new_region['point']
+            color = [0.0, 1.0, 0.0]
+
+            point_cloud.paint_uniform_color(color)
+            viewpoint_geom = o3d.geometry.TriangleMesh.create_sphere(
+                radius=1)
+            viewpoint_geom.paint_uniform_color(color)
+            viewpoint_geom.transform(viewpoint_tf)
+
+            viewpoint_line = o3d.geometry.LineSet()
+            viewpoint_line.points = o3d.utility.Vector3dVector(
+                np.array([origin, point]))
+            viewpoint_line.lines = o3d.utility.Vector2iVector(
+                np.array([[0, 1]]))
+            viewpoint_line.paint_uniform_color(color)
+
+            self.scene_widget.scene.add_geometry(
+                f"{new_region_name}_viewpoint", viewpoint_geom, self.viewpoint_material)
+            self.scene_widget.scene.add_geometry(
+                new_region_name, point_cloud, self.part_point_cloud_material)
+            self.scene_widget.scene.add_geometry(
+                f"{new_region_name}_line", viewpoint_line, self.line_material)
+
+        self.selected_viewpoint = 0
         self.viewpoint_slider = gui.Slider(gui.Slider.INT)
         self.viewpoint_slider.set_limits(0, 100)
         self.viewpoint_slider.enabled = False
+        self.viewpoint_slider.set_on_value_changed(
+            _on_viewpoint_slider_changed)
         self.viewpoint_stack.add_child(self.viewpoint_progress_bar)
         self.viewpoint_stack.add_child(self.viewpoint_slider)
         self.viewpoint_stack.selected_index = 0
@@ -1483,7 +1559,7 @@ class MyGui():
                     self.scene_widget.scene.remove_geometry(
                         self.part_point_cloud_name)
 
-                    selected_index = 0
+                    selected_index = self.selected_viewpoint
                     self.viewpoint_stack.selected_index = selected_index + 1
                     self.viewpoint_slider.enabled = True
                     self.viewpoint_slider.set_limits(
