@@ -66,7 +66,7 @@ class Partitioner:
         self.area_per_point = 0
         self.eval_tries = 0
         self.min_tires = 0
-        self.pcd_common = PointCloud()
+        self.npcd_common = NPCD(np.array([]), np.array([]), np.array([]))
         self.ppsqmm = 10
         self.valid_pcds = []
         self.overall_packing_efficiency = 0
@@ -76,6 +76,7 @@ class Partitioner:
         self.is_running = False
         self.pcd = None
         self.progress = 0.0
+        self.viewpoint_dict = {}
 
     def evaluate_cluster(self, pcd):
         """ Function to be implemented for testing different ways of evaluating validity of a cluster. """
@@ -375,7 +376,7 @@ class Partitioner:
         # non_valid_pcd, cost, pcds = self.pcd_partitioner.evaluate_k_cost(copy.deepcopy(
         #     self.pcd.pcd), k, self.camera, self.pcd_partitioner.evaluate_cluster_fov, tries=1)
         cost = self.evaluate_k_cost(copy.deepcopy(
-            self.pcd_common), k, self.evaluate_cluster_fov, tries=1)
+            self.npcd_common), k, self.evaluate_cluster_fov, tries=1)
         return cost
 
     def evaluate_k_cost(self, pcd, k, eval_fun, tries=1):
@@ -708,7 +709,7 @@ class Partitioner:
             for i, planar_pcd in enumerate(planar_pcds):
 
                 print(f'Partitioning planar patch {i} into regions:')
-                self.pcd_common = copy.deepcopy(planar_pcd)
+                self.npcd_common = copy.deepcopy(planar_pcd)
                 k_roi, pcds = self.optimize_k_b_opt(copy.deepcopy(
                     planar_pcd), self.evaluate_cluster_fov)
                 self.total_planar_pcds += 1
@@ -809,7 +810,7 @@ class Partitioner:
         for i, planar_npcd in enumerate(planar_npcds):
             print(type(planar_npcd))
 
-            self.pcd_common = copy.deepcopy(planar_npcd)
+            self.npcd_common = copy.deepcopy(planar_npcd)
             k_roi, npcds = self.optimize_k_b_opt(copy.deepcopy(
                 planar_npcd), self.evaluate_cluster_fov)
 
@@ -831,6 +832,9 @@ class Partitioner:
         print("total point out percentage", total_point_out_percentage)
         return region_npcds
 
+    def get_viewpoint_dict(self):
+        return copy.deepcopy(self.viewpoint_dict)
+
     def display_inlier_outlier(self, cloud, ind):
         inlier_cloud = cloud.select_by_index(ind)
         outlier_cloud = cloud.select_by_index(ind, invert=True)
@@ -840,13 +844,47 @@ class Partitioner:
         inlier_cloud.paint_uniform_color([0.8, 0.8, 0.8])
         o3d.visualization.draw([inlier_cloud, outlier_cloud])
 
+    def get_viewpoint(self, pcd):
+        origin = pcd.get_center()
+
+        normals = np.asarray(pcd.normals)
+        normal = np.average(normals, 0)
+        normal = normal/np.linalg.norm(normal)
+
+        point = origin + self.focal_distance*normal
+
+        z = np.array([0, 0, 1])
+        z_hat = -normal
+        x_hat = np.cross(z, z_hat)
+        y_hat = np.cross(z_hat, x_hat)
+
+        x_hat = x_hat/np.linalg.norm(x_hat)
+        y_hat = y_hat/np.linalg.norm(y_hat)
+        z_hat = z_hat/np.linalg.norm(z_hat)
+
+        T = np.eye(4)
+        T[:3, 0] = x_hat
+        T[:3, 1] = y_hat
+        T[:3, 2] = z_hat
+        T[:3, 3] = point
+
+        return T, origin, point
+
     def worker(self):
         """ Worker function for threading. """
         npcd = NPCD.from_o3d_point_cloud(self.pcd)
         region_npcds = self.rg_not_smart_partition(npcd)
         self.region_pcds = []
-        for region_npcd in region_npcds:
+        for i, region_npcd in enumerate(region_npcds):
             region_pcd = region_npcd.get_o3d_point_cloud()
+            viewpoint, origin, point = self.get_viewpoint(region_pcd)
+            self.viewpoint_dict[f'region_{i}'] = {}
+            self.viewpoint_dict[f'region_{i}']['point_cloud'] = region_pcd
+            self.viewpoint_dict[f'region_{i}']['viewpoint'] = viewpoint
+            self.viewpoint_dict[f'region_{i}']['origin'] = origin
+            self.viewpoint_dict[f'region_{i}']['point'] = point
+            val = np.random.rand()
+            self.viewpoint_dict[f'region_{i}']['color'] = [val, val, val]
             self.region_pcds.append(region_pcd)
 
     def run(self, pcd):

@@ -124,90 +124,93 @@ class RosThread(Node):
             self.depth_intrinsic, extrinsic=np.eye(4))
 
         self.geom_pcd = self.generate_point_cloud()
+        self.camera_params = {}
 
         # Macro Camera
         self.get_logger().info('Connecting to camera1 node...')
         camera_node_name = 'camera1'
         self.camera_node_list_parameters_cli = self.create_client(
             ListParameters, camera_node_name + '/list_parameters')
-        while not self.camera_node_list_parameters_cli.wait_for_service(timeout_sec=1.0):
+        if not self.camera_node_list_parameters_cli.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('service not available, waiting again...')
-        self.get_logger().info('Connected!')
+        else:
+            self.get_logger().info('Connected!')
 
-        req = ListParameters.Request()
-        self.get_logger().info('Sending list parameters request...')
-        future = self.camera_node_list_parameters_cli.call_async(req)
-        rclpy.spin_until_future_complete(self, future)
-        resp = future.result()
-        self.get_logger().info('Got parameters.')
-        param_names = []
-        for param_name in resp.result.names:
-            param_names.append(param_name)
+            req = ListParameters.Request()
+            self.get_logger().info('Sending list parameters request...')
+            future = self.camera_node_list_parameters_cli.call_async(req)
+            rclpy.spin_until_future_complete(self, future)
+            resp = future.result()
+            self.get_logger().info('Got parameters.')
+            param_names = []
+            for param_name in resp.result.names:
+                param_names.append(param_name)
 
         self.camera_node_describe_parameters_cli = self.create_client(
             DescribeParameters, camera_node_name + '/describe_parameters')
-        while not self.camera_node_describe_parameters_cli.wait_for_service(timeout_sec=1.0):
+        if not self.camera_node_describe_parameters_cli.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('service not available, waiting again...')
-        req = DescribeParameters.Request()
-        req.names = param_names
-        self.get_logger().info('Sending describe parameters request...')
-        future = self.camera_node_describe_parameters_cli.call_async(req)
-        rclpy.spin_until_future_complete(self, future)
-        resp = future.result()
+        else:
+            req = DescribeParameters.Request()
+            req.names = param_names
+            self.get_logger().info('Sending describe parameters request...')
+            future = self.camera_node_describe_parameters_cli.call_async(req)
+            rclpy.spin_until_future_complete(self, future)
+            resp = future.result()
 
-        self.camera_params = {}
-        for param in resp.descriptors:
-            self.camera_params[param.name] = {}
-            self.camera_params[param.name]['type'] = param.type
-            self.camera_params[param.name]['description'] = param.description
-            self.camera_params[param.name]['choices'] = param.additional_constraints.split(
-                '\n')
-            self.camera_params[param.name]['read_only'] = param.read_only
+            for param in resp.descriptors:
+                self.camera_params[param.name] = {}
+                self.camera_params[param.name]['type'] = param.type
+                self.camera_params[param.name]['description'] = param.description
+                self.camera_params[param.name]['choices'] = param.additional_constraints.split(
+                    '\n')
+                self.camera_params[param.name]['read_only'] = param.read_only
 
         self.camera_node_get_parameters_cli = self.create_client(
             GetParameters, camera_node_name + '/get_parameters')
-        while not self.camera_node_get_parameters_cli.wait_for_service(timeout_sec=1.0):
+        if not self.camera_node_get_parameters_cli.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('service not available, waiting again...')
-        req = GetParameters.Request()
-        req.names = param_names
-        self.get_logger().info('Sending get parameters request...')
-        future = self.camera_node_get_parameters_cli.call_async(req)
-        rclpy.spin_until_future_complete(self, future)
-        resp = future.result()
+        else:
+            req = GetParameters.Request()
+            req.names = param_names
+            self.get_logger().info('Sending get parameters request...')
+            future = self.camera_node_get_parameters_cli.call_async(req)
+            rclpy.spin_until_future_complete(self, future)
+            resp = future.result()
 
-        for i in range(len(param_names)):
-            if resp.values[i].type == rclpy.Parameter.Type.BOOL:
-                self.camera_params[param_names[i]
-                                   ]['value'] = resp.values[i].bool_value
-            elif resp.values[i].type == rclpy.Parameter.Type.BOOL_ARRAY:
-                self.camera_params[param_names[i]
-                                   ]['value'] = resp.values[i].bool_array_value
-            elif resp.values[i].type == rclpy.Parameter.Type.BYTE_ARRAY:
-                self.camera_params[param_names[i]
-                                   ]['value'] = resp.values[i].byte_array_value
-            elif resp.values[i].type == rclpy.Parameter.Type.DOUBLE:
-                self.camera_params[param_names[i]
-                                   ]['value'] = resp.values[i].double_value
-            elif resp.values[i].type == rclpy.Parameter.Type.DOUBLE_ARRAY:
-                self.camera_params[param_names[i]
-                                   ['value']] = resp.values[i].double_array_value
-            elif resp.values[i].type == 2:
-                self.camera_params[param_names[i]
-                                   ]['value'] = resp.values[i].integer_value
-            elif resp.values[i].type == rclpy.Parameter.Type.INTEGER_ARRAY:
-                self.camera_params[param_names[i]
-                                   ]['value'] = resp.values[i].integer_array_value
-            elif resp.values[i].type == 4:
-                self.camera_params[param_names[i]
-                                   ]['value'] = resp.values[i].string_value
-            elif resp.values[i].type == rclpy.Parameter.Type.STRING_ARRAY:
-                self.camera_params[param_names[i]
-                                   ]['value'] = resp.values[i].string_array_value
+            for i in range(len(param_names)):
+                if resp.values[i].type == rclpy.Parameter.Type.BOOL:
+                    self.camera_params[param_names[i]
+                                       ]['value'] = resp.values[i].bool_value
+                elif resp.values[i].type == rclpy.Parameter.Type.BOOL_ARRAY:
+                    self.camera_params[param_names[i]
+                                       ]['value'] = resp.values[i].bool_array_value
+                elif resp.values[i].type == rclpy.Parameter.Type.BYTE_ARRAY:
+                    self.camera_params[param_names[i]
+                                       ]['value'] = resp.values[i].byte_array_value
+                elif resp.values[i].type == rclpy.Parameter.Type.DOUBLE:
+                    self.camera_params[param_names[i]
+                                       ]['value'] = resp.values[i].double_value
+                elif resp.values[i].type == rclpy.Parameter.Type.DOUBLE_ARRAY:
+                    self.camera_params[param_names[i]
+                                       ['value']] = resp.values[i].double_array_value
+                elif resp.values[i].type == 2:
+                    self.camera_params[param_names[i]
+                                       ]['value'] = resp.values[i].integer_value
+                elif resp.values[i].type == rclpy.Parameter.Type.INTEGER_ARRAY:
+                    self.camera_params[param_names[i]
+                                       ]['value'] = resp.values[i].integer_array_value
+                elif resp.values[i].type == 4:
+                    self.camera_params[param_names[i]
+                                       ]['value'] = resp.values[i].string_value
+                elif resp.values[i].type == rclpy.Parameter.Type.STRING_ARRAY:
+                    self.camera_params[param_names[i]
+                                       ]['value'] = resp.values[i].string_array_value
 
         # Set Parameters Client
         self.camera_node_set_parameters_cli = self.create_client(
             SetParameters, 'camera1/set_parameters')
-        while not self.camera_node_set_parameters_cli.wait_for_service(timeout_sec=1.0):
+        if not self.camera_node_set_parameters_cli.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('service not available, waiting again...')
 
         # Get all frames in tf tree
