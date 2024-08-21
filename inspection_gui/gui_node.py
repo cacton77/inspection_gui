@@ -1500,20 +1500,20 @@ class MyGui():
 
             # Add Camera
 
-            stereo_camera = o3d.geometry.LineSet().create_camera_visualization(
-                depth_intrinsic, extrinsic=np.eye(4))
-            stereo_camera.scale(self.depth_trunc, center=np.array([0, 0, 0]))
-            stereo_camera.transform(T)
-            stereo_camera.scale(100.0, center=np.array([0, 0, 0]))
-            stereo_camera.paint_uniform_color(
-                np.array([0/255, 255/255, 255/255]))
+            # stereo_camera = o3d.geometry.LineSet().create_camera_visualization(
+            #     depth_intrinsic, extrinsic=np.eye(4))
+            # stereo_camera.scale(self.depth_trunc, center=np.array([0, 0, 0]))
+            # stereo_camera.transform(T)
+            # stereo_camera.scale(100.0, center=np.array([0, 0, 0]))
+            # stereo_camera.paint_uniform_color(
+            #     np.array([0/255, 255/255, 255/255]))
 
             main_camera = o3d.geometry.LineSet()
             fov_width_m = 0.001*self.fov_width_mm * \
                 (self.roi_width/self.fov_width_px)
             fov_height_m = 0.001*self.fov_height_mm * \
                 (self.roi_height/self.fov_height_px)
-            focal_distance_m = 0.001*self.focal_distance
+            focal_distance_m = 0.01*self.focal_distance
 
             o = np.array([0, 0, 0])
             tl = [-fov_width_m/2, fov_height_m/2, focal_distance_m]
@@ -1529,23 +1529,23 @@ class MyGui():
             main_camera.scale(100.0, center=np.array([0, 0, 0]))
             main_camera.paint_uniform_color(np.array([255/255, 0/255, 0/255]))
 
-            self.scene_widget.scene.add_geometry(
-                "stereo_camera", stereo_camera, self.line_material)
+            # self.scene_widget.scene.add_geometry(
+            # "stereo_camera", stereo_camera, self.line_material)
             self.scene_widget.scene.add_geometry(
                 "main_camera", main_camera, self.line_material)
 
             # Add Light Ring
 
-            light_ring_mesh = o3d.geometry.TriangleMesh.create_cylinder(
-                radius=0.1, height=0.01)
-            light_ring = o3d.geometry.LineSet.create_from_triangle_mesh(
-                light_ring_mesh)
-            light_ring.transform(T)
-            light_ring.scale(100.0, center=np.array([0, 0, 0]))
-            light_ring.paint_uniform_color(np.array([255/255, 255/255, 0/255]))
+            # light_ring_mesh = o3d.geometry.TriangleMesh.create_cylinder(
+            #     radius=0.1, height=0.01)
+            # light_ring = o3d.geometry.LineSet.create_from_triangle_mesh(
+            #     light_ring_mesh)
+            # light_ring.transform(T)
+            # light_ring.scale(100.0, center=np.array([0, 0, 0]))
+            # light_ring.paint_uniform_color(np.array([255/255, 255/255, 0/255]))
 
-            self.scene_widget.scene.add_geometry(
-                "light_ring", light_ring, self.line_material)
+            # self.scene_widget.scene.add_geometry(
+            #     "light_ring", light_ring, self.line_material)
 
             # Partitioning Results
             if self.partitioner.is_running:
