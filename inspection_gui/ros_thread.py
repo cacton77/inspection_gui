@@ -259,7 +259,7 @@ class RosThread(Node):
 
     def capture_image(self, file_path):
         self.lights_on(100.0)
-        self.get_logger().info('Capturing image...')
+        self.get_logger().info(f'Capturing image to: {file_path}')
         req = CaptureImage.Request()
         req.file_path = file_path
         self.capture_image_future = self.capture_image_cli.call_async(req)

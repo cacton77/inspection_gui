@@ -5,6 +5,7 @@ import os
 import yaml
 import platform
 import cv2  # OpenCV library
+import datetime
 import open3d as o3d
 import open3d.visualization.gui as gui
 import numpy as np
@@ -746,8 +747,11 @@ class MyGui():
         self.image_count = 0
 
         def _on_capture_image():
+            # Get date and time and use as filename
+            file_name = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+
             file_path = self.inspection_root_path + \
-                '/Images/image_' + str(self.image_count) + '.jpg'
+                '/Images/' + file_name + '.jpg'
             self.ros_thread.capture_image(file_path)
             self.image_count += 1
 
