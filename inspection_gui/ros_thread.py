@@ -237,9 +237,9 @@ class RosThread(Node):
             self.get_logger().info('Connected to capture image service!')
 
     def lights_on(self, value):
-        self.pixel_color.r = value
-        self.pixel_color.g = value
-        self.pixel_color.b = value
+        self.pixel_color.r = float(value)
+        self.pixel_color.g = float(value)
+        self.pixel_color.b = float(value)
 
     def lights_off(self):
         self.pixel_color.r = 0.0
@@ -250,7 +250,7 @@ class RosThread(Node):
         self.pixel_pub.publish(self.pixel_color)
 
     def capture_image(self, file_path):
-        self.lights_on(100)
+        self.lights_on(100.0)
         self.get_logger().info('Capturing image...')
         req = CaptureImage.Request()
         req.file_path = file_path
