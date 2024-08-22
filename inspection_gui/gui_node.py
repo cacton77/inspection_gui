@@ -249,7 +249,7 @@ class MyGui():
 
         self.defects = self.config_dict['defects']
 
-        self.scene_ribbon.add_child(gui.Label("Defects:"))
+        self.scene_ribbon.add_child(gui.Label("Defect Selection:"))
         defect_selection = gui.Combobox()
         for i in range(len(self.defects)):
             defect_selection.add_item(self.defects[i]['name'])

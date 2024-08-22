@@ -745,7 +745,7 @@ class Partitioner:
         self.normal_weight = 0
 
         self.progress = 0.25
-        progress_steps = (1 - self.progress)/len(planar_npcds)
+        progress_steps = (0.9 - self.progress)/len(planar_npcds)
 
         # self.planar_pcds = []
         # for i, planar_npcd in enumerate(planar_npcds):
@@ -775,7 +775,7 @@ class Partitioner:
 
             self.progress = self.progress + progress_steps
 
-        self.progress = 1.0
+        self.progress = 0.9
 
         self.normal_weight = initial_normal_weight
         total_packing_efficiency = self.overall_packing_efficiency / \
@@ -804,7 +804,7 @@ class Partitioner:
         self.normal_weight = 0
 
         # 50% of the progress is made in the planar partitioning
-        progress = 0.5
+        progress = 0.25
         progress_queue.put(progress)
         result_queue.put(planar_npcds)
         progress_steps = 0.5/len(planar_npcds)
@@ -949,6 +949,7 @@ class Partitioner:
             self.viewpoint_dict[f'region_{i}']['color'] = [val, val, val]
             self.region_pcds.append(region_pcd)
         self.calculate_best_path()
+        self.progress = 1.0
 
     def run(self, pcd):
         """ Start the worker thread. """
