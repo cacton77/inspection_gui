@@ -749,6 +749,7 @@ class MyGui():
             file_path = self.inspection_root_path + \
                 '/Images/image_' + str(self.image_count) + '.jpg'
             self.ros_thread.capture_image(file_path)
+            self.image_count += 1
 
         self.capture_image_button = gui.Button("Capture")
         self.capture_image_button.set_on_clicked(_on_capture_image)
