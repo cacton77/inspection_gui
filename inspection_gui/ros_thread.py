@@ -89,6 +89,7 @@ class RosThread(Node):
 
         # Lights
 
+        self.capture_image_future = None
         self.pixel_color = ColorRGBA()
         pixel_pub_timer_period = 0.1
         self.pixel_pub = self.create_publisher(ColorRGBA, '/pixel_strip', 10)
@@ -229,7 +230,6 @@ class RosThread(Node):
         self.staticTfBroadcaster = tf2_ros.StaticTransformBroadcaster(self)
 
         # Capture Image Client
-        self.capture_image_future = None
         self.capture_image_cli = self.create_client(
             CaptureImage, '/capture_image')
         if not self.capture_image_cli.wait_for_service(timeout_sec=1.0):
