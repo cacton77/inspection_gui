@@ -728,7 +728,6 @@ class Partitioner:
 
 # Region growing not added to the smart partition function
 
-
     def rg_not_smart_partition(self, npcd):
         """ Partition PCD into Planar Patches, partition Planar Patches into Regions. """
         print(f'Partitioning part into planar patches:')
@@ -745,8 +744,8 @@ class Partitioner:
         initial_normal_weight = self.normal_weight
         self.normal_weight = 0
 
-        self.progress = 0.5
-        progress_steps = 0.5/len(planar_npcds)
+        self.progress = 0.25
+        progress_steps = (1 - self.progress)/len(planar_npcds)
 
         # self.planar_pcds = []
         # for i, planar_npcd in enumerate(planar_npcds):
@@ -878,7 +877,30 @@ class Partitioner:
         points = np.zeros((num_viewpoints, 3))
         for i, (region_name, region) in enumerate(self.viewpoint_dict.items()):
             points[i, :] = np.array(region['point'])
-        self.best_path, _ = self.traveling_salesperson(points)
+        self.best_path, _ = self.nearest_neighbor_tsp(points)
+
+    def nearest_neighbor_tsp(self, points):
+        num_points = len(points)
+        unvisited = set(range(num_points))
+        current_point = 0
+        path = [current_point]
+        unvisited.remove(current_point)
+        total_distance = 0
+
+        while unvisited:
+            next_point = min(unvisited, key=lambda point: euclidean(
+                points[current_point], points[point]))
+            total_distance += euclidean(points[current_point],
+                                        points[next_point])
+            current_point = next_point
+            path.append(current_point)
+            unvisited.remove(current_point)
+
+        # Return to the starting point
+        total_distance += euclidean(points[current_point], points[path[0]])
+        path.append(path[0])
+
+        return path, total_distance
 
     def traveling_salesperson(self, points):
         # Calculate the distance matrix
@@ -926,7 +948,7 @@ class Partitioner:
             val = np.random.rand()
             self.viewpoint_dict[f'region_{i}']['color'] = [val, val, val]
             self.region_pcds.append(region_pcd)
-        # self.calculate_best_path()
+        self.calculate_best_path()
 
     def run(self, pcd):
         """ Start the worker thread. """
@@ -946,9 +968,8 @@ if __name__ == "__main__":
     partitioner = Partitioner()
 
     # Example usage
-    points = [np.array([0, 0, 0]), np.array([1, 1, 1]),
-              np.array([2, 2, 2]), np.array([3, 3, 3])]
-    best_path, min_distance = partitioner.traveling_salesperson(points)
+    points = np.random.rand(1000, 3)
+    best_path, min_distance = partitioner.nearest_neighbor_tsp(points)
 
     print("Best path:", best_path)
     print("Minimum distance:", min_distance)

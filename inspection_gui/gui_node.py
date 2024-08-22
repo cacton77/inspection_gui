@@ -55,6 +55,8 @@ class MyGui():
         self.config_dict = yaml.load(
             open(self.config_file), Loader=yaml.FullLoader)
 
+        self.inspection_root_path = self.config_dict['inspection_root']
+
         self.update_delay = update_delay
         self.is_done = False
         self.lock = threading.Lock()
@@ -189,7 +191,8 @@ class MyGui():
         # Tab buttons
         self.scene_ribbon = gui.Horiz(0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
-        load_part_button = gui.Button("Load Part")
+        self.scene_ribbon.add_child(gui.Label("Part: "))
+        load_part_button = gui.Button("Load YAML")
         load_part_button.set_on_clicked(self._on_load_part_config)
         self.part_model_file_edit = gui.TextEdit()
         self.part_model_file_edit.placeholder_text = "/path/to/model.stl"
@@ -223,6 +226,39 @@ class MyGui():
         grid.add_child(self.part_pcd_file_edit)
         grid.add_child(self.part_pcd_units_select)
 
+        self.scene_ribbon.add_child(load_part_button)
+        self.scene_ribbon.add_fixed(0.5 * em)
+        self.scene_ribbon.add_child(grid)
+        self.scene_ribbon.add_fixed(5 * em)
+
+        # Scene ribbon defect panels
+
+        def _on_defect_select(value, i):
+            defect_camera = self.defects[i]['camera']
+            self.fov_height_mm = defect_camera['fov']['height_mm']
+            self.fov_width_mm = defect_camera['fov']['width_mm']
+            self.roi_height = defect_camera['roi']['height_px']
+            self.roi_width = defect_camera['roi']['width_px']
+            self.focal_distance_mm = defect_camera['focal_distance_mm']
+
+            self.fov_height_mm_edit.double_value = self.fov_height_mm
+            self.fov_width_mm_edit.double_value = self.fov_width_mm
+            self.roi_height_edit.int_value = self.roi_height
+            self.roi_width_edit.int_value = self.roi_width
+            self.focal_distance_edit.double_value = self.focal_distance_mm
+
+        self.defects = self.config_dict['defects']
+
+        self.scene_ribbon.add_child(gui.Label("Defects:"))
+        defect_selection = gui.Combobox()
+        for i in range(len(self.defects)):
+            defect_selection.add_item(self.defects[i]['name'])
+        defect_selection.set_on_selection_changed(_on_defect_select)
+        self.scene_ribbon.add_child(defect_selection)
+        width = self.window.content_rect.width
+        self.scene_ribbon.add_fixed(width)
+
+        # Scanner buttons
         # Attempt to add Material Icons to button
         # 0xE037, 0xE034
         play_button = gui.Button("Play")
@@ -231,14 +267,6 @@ class MyGui():
         stop_button = gui.Button('Stop')
         part_frame_button = gui.Button('v')
         part_frame_button.toggleable = True
-
-        self.scene_ribbon.add_child(load_part_button)
-        self.scene_ribbon.add_fixed(0.5 * em)
-        self.scene_ribbon.add_child(grid)
-        self.scene_ribbon.add_fixed(50 * em)
-        self.scene_ribbon.add_child(play_button)
-        self.scene_ribbon.add_fixed(0.5 * em)
-        self.scene_ribbon.add_child(stop_button)
 
         # STEREO CAMERA PANEL #########################################################
 
@@ -562,11 +590,13 @@ class MyGui():
         self.fov_width_px_edit = gui.NumberEdit(gui.NumberEdit.Type.INT)
         self.fov_width_px_edit.set_on_value_changed(_on_fov_width_px_edit)
         self.fov_width_px_edit.int_value = self.fov_width_px
+        self.fov_width_px_edit.enabled = False
         fov_px_grid.add_child(self.fov_width_px_edit)
         fov_px_grid.add_child(gui.Label("height (px): "))
         self.fov_height_px_edit = gui.NumberEdit(gui.NumberEdit.Type.INT)
         self.fov_height_px_edit.set_on_value_changed(_on_fov_height_px_edit)
         self.fov_height_px_edit.int_value = self.fov_height_px
+        self.fov_height_px_edit.enabled = False
         fov_px_grid.add_child(self.fov_height_px_edit)
 
         fov_mm_grid = gui.VGrid(2, 0.25 * em)
@@ -650,7 +680,8 @@ class MyGui():
             self.scene_widget.scene.add_geometry(
                 f"{old_region_name}_line", viewpoint_line, self.line_material)
 
-            self.selected_viewpoint = int(value-1)
+            # get new selected_viewpoint
+            self.selected_viewpoint = self.partitioner.best_path[int(value-1)]
 
             new_region_name = f"region_{self.selected_viewpoint}"
             self.scene_widget.scene.remove_geometry(new_region_name)
@@ -707,8 +738,12 @@ class MyGui():
         horiz.add_child(gui.Button("Focus"))
         horiz.add_child(gui.Button("Move"))
 
+        # Image capture
+        self.image_count = 0
+
         def _on_capture_image():
-            file_path = '/home/col/Inspection/Parts/image.jpg'
+            file_path = self.inspection_root_path + \
+                '/Images/image_' + str(self.image_count) + '.jpg'
             self.ros_thread.capture_image(file_path)
 
         self.capture_image_button = gui.Button("Capture")
@@ -1664,11 +1699,15 @@ class MyGui():
                     self.scene_widget.scene.remove_geometry(
                         self.part_point_cloud_name)
 
-                    selected_index = self.selected_viewpoint
+                    selected_index = self.partitioner.best_path[self.selected_viewpoint]
                     self.viewpoint_stack.selected_index = selected_index + 1
                     self.viewpoint_slider.enabled = True
                     self.viewpoint_slider.set_limits(
                         1, len(self.viewpoint_dict.keys()))
+
+                    self._reset_scene()
+                    self.scene_widget.scene.remove_geometry(
+                        self.part_point_cloud_name)
 
                     for i, (region_name, region) in enumerate(self.viewpoint_dict.items()):
 
