@@ -937,6 +937,7 @@ class Partitioner:
         npcd = NPCD.from_o3d_point_cloud(self.pcd)
         region_npcds = self.rg_not_smart_partition(npcd)
         self.region_pcds = []
+        self.viewpoint_dict = {}
         for i, region_npcd in enumerate(region_npcds):
             region_pcd = region_npcd.get_o3d_point_cloud()
             viewpoint, origin, point = self.get_viewpoint(region_pcd)
