@@ -250,11 +250,11 @@ class MyGui():
         self.defects = self.config_dict['defects']
 
         self.scene_ribbon.add_child(gui.Label("Defect Selection:"))
-        defect_selection = gui.Combobox()
+        self.defect_selection = gui.Combobox()
         for i in range(len(self.defects)):
-            defect_selection.add_item(self.defects[i]['name'])
-        defect_selection.set_on_selection_changed(_on_defect_select)
-        self.scene_ribbon.add_child(defect_selection)
+            self.defect_selection.add_item(self.defects[i]['name'])
+        self.defect_selection.set_on_selection_changed(_on_defect_select)
+        self.scene_ribbon.add_child(self.defect_selection)
         width = self.window.content_rect.width
         self.scene_ribbon.add_fixed(width)
 
@@ -573,12 +573,16 @@ class MyGui():
             self.partitioner.focal_distance = value / 10
 
         def _on_viewpoint_generation_button_clicked():
-            # npcd = NPCD.from_o3d_point_cloud(self.part_point_cloud)
-            # self.partitioning_process = Process(
-            #     target=self.partitioner.rg_not_smart_partition_worker, args=(npcd,
-            #                                                                  self.partitioning_progress_queue,
-            #                                                                  self.partitioning_results_queue))
-            # self.partitioning_process.start(self.part_point_cloud)
+            # Disable UI buttons
+            self.defect_selection.enabled = False
+            self.roi_width_edit.enabled = False
+            self.roi_height_edit.enabled = False
+            self.fov_height_mm_edit.enabled = False
+            self.fov_width_mm_edit.enabled = False
+            self.part_model_file_edit.enabled = False
+            self.part_pcd_file_edit.enabled = False
+
+            # Clear existing viewpoints
             self.viewpoint_dict = None
             self.viewpoint_stack.selected_index = 0
             self.part_point_cloud.paint_uniform_color([0.8, 0.8, 0.8])
@@ -1068,6 +1072,8 @@ class MyGui():
         if self.part_point_cloud is not None:
             self.scene_widget.scene.add_geometry(
                 self.part_point_cloud_name, self.part_point_cloud, self.part_point_cloud_material)
+        self.scene_widget.setup_camera(
+            60, self.scene_widget.scene.bounding_box, [0, 0, 0])
 
     def _send_transform(self, T, parent, child):
         self.ros_thread.send_transform(T, parent, child)
@@ -1089,6 +1095,12 @@ class MyGui():
         part_pcd_file = self.config_dict['part']['point_cloud']
         self.part_pcd_file_edit.text_value = part_pcd_file
         self._import_point_cloud(part_pcd_file)
+
+        self.defects = self.config_dict['defects']
+
+        self.defect_selection.clear_items()
+        for i in range(len(self.defects)):
+            self.defect_selection.add_item(self.defects[i]['name'])
 
         # Send updated part frame
         self.part_frame_parent = self.config_dict['part']['frame']['parent']
@@ -1692,6 +1704,14 @@ class MyGui():
                 progress = self.partitioner.progress
                 self.viewpoint_progress_bar.value = progress
                 if progress == 1.0:
+                    # Enable UI Buttons
+                    self.defect_selection.enabled = True
+                    self.roi_width_edit.enabled = True
+                    self.roi_height_edit.enabled = True
+                    self.fov_height_mm_edit.enabled = True
+                    self.fov_width_mm_edit.enabled = True
+                    self.part_model_file_edit.enabled = True
+                    self.part_pcd_file_edit.enabled = True
                     self.generate_viewpoints_button.enabled = True
 
                     self.partitioner.stop()

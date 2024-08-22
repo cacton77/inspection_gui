@@ -25,6 +25,7 @@ from rcl_interfaces.srv import ListParameters, DescribeParameters, GetParameters
 
 from inspection_gui.tf2_message_filter import Tf2MessageFilter
 from inspection_srvs.srv import CaptureImage
+from std_msgs.msg import ColorRGBA
 
 
 class RosThread(Node):
@@ -85,6 +86,14 @@ class RosThread(Node):
         inference_timer_period = 0.1
         # self.inference_timer = self.create_timer(
         # inference_timer_period, self.inference_timer_callback)
+
+        # Lights
+
+        self.pixel_color = ColorRGBA()
+        pixel_pub_timer_period = 0.1
+        self.pixel_pub = self.create_publisher(ColorRGBA, '/pixel_strip', 10)
+        self.pixel_pub_timer = self.create_timer(
+            pixel_pub_timer_period, self.pixel_pub_timer_callback)
 
         # Send moveit servo command
 
@@ -227,11 +236,27 @@ class RosThread(Node):
         else:
             self.get_logger().info('Connected to capture image service!')
 
+    def lights_on(self, value):
+        self.pixel_color.r = value
+        self.pixel_color.g = value
+        self.pixel_color.b = value
+
+    def lights_off(self):
+        self.pixel_color.r = 0.0
+        self.pixel_color.g = 0.0
+        self.pixel_color.b = 0.0
+
+    def pixel_pub_timer_callback(self):
+        self.pixel_pub.publish(self.pixel_color)
+
     def capture_image(self, file_path):
+        self.lights_on(100)
         self.get_logger().info('Capturing image...')
         req = CaptureImage.Request()
         req.file_path = file_path
         future = self.capture_image_cli.call_async(req)
+
+        self.lights_off()
         # rclpy.spin_until_future_complete(self, future)
         # resp = future.result()
 
