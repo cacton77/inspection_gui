@@ -252,6 +252,8 @@ class RosThread(Node):
             if self.capture_image_future.done():
                 self.capture_image_future = None
                 self.lights_off()
+            else:
+                rclpy.spin_once(self)
 
         self.pixel_pub.publish(self.pixel_color)
 
