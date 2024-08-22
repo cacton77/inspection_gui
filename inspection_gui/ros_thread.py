@@ -229,6 +229,7 @@ class RosThread(Node):
         self.staticTfBroadcaster = tf2_ros.StaticTransformBroadcaster(self)
 
         # Capture Image Client
+        self.capture_image_future = None
         self.capture_image_cli = self.create_client(
             CaptureImage, '/capture_image')
         if not self.capture_image_cli.wait_for_service(timeout_sec=1.0):
@@ -247,6 +248,11 @@ class RosThread(Node):
         self.pixel_color.b = 0.0
 
     def pixel_pub_timer_callback(self):
+        if self.capture_image_future is not None:
+            if self.capture_image_future.done():
+                self.capture_image_future = None
+                self.lights_off()
+
         self.pixel_pub.publish(self.pixel_color)
 
     def capture_image(self, file_path):
@@ -254,9 +260,8 @@ class RosThread(Node):
         self.get_logger().info('Capturing image...')
         req = CaptureImage.Request()
         req.file_path = file_path
-        future = self.capture_image_cli.call_async(req)
+        self.capture_image_future = self.capture_image_cli.call_async(req)
 
-        self.lights_off()
         # rclpy.spin_until_future_complete(self, future)
         # resp = future.result()
 
