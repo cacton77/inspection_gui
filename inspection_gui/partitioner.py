@@ -5,6 +5,8 @@ import copy
 import numpy as np
 import open3d as o3d
 from multiprocessing import Queue, Process
+from scipy.spatial.distance import euclidean
+from itertools import permutations
 
 from math import pi
 from sklearn.cluster import KMeans  # . . . . . . . . K-means
@@ -77,6 +79,7 @@ class Partitioner:
         self.pcd = None
         self.progress = 0.0
         self.viewpoint_dict = {}
+        self.best_path = []
 
     def evaluate_cluster(self, pcd):
         """ Function to be implemented for testing different ways of evaluating validity of a cluster. """
@@ -870,6 +873,43 @@ class Partitioner:
 
         return T, origin, point
 
+    def calculate_best_path(self):
+        num_viewpoints = len(self.viewpoint_dict.items())
+        points = np.zeros((num_viewpoints, 3))
+        for i, (region_name, region) in enumerate(self.viewpoint_dict.items()):
+            points[i, :] = np.array(region['point'])
+        self.best_path, _ = self.traveling_salesperson(points)
+
+    def traveling_salesperson(self, points):
+        # Calculate the distance matrix
+        num_points = len(points)
+        distance_matrix = np.zeros((num_points, num_points))
+
+        for i in range(num_points):
+            for j in range(num_points):
+                distance_matrix[i][j] = euclidean(points[i], points[j])
+
+        # Generate all possible permutations of points
+        all_permutations = permutations(range(num_points))
+
+        # Initialize minimum distance and best path
+        min_distance = float('inf')
+        best_path = None
+
+        # Iterate through all permutations to find the shortest path
+        for perm in all_permutations:
+            current_distance = 0
+            for i in range(num_points - 1):
+                current_distance += distance_matrix[perm[i]][perm[i+1]]
+            # Return to the starting point
+            current_distance += distance_matrix[perm[-1]][perm[0]]
+
+            if current_distance < min_distance:
+                min_distance = current_distance
+                best_path = perm
+
+        return best_path, min_distance
+
     def worker(self):
         """ Worker function for threading. """
         npcd = NPCD.from_o3d_point_cloud(self.pcd)
@@ -886,6 +926,7 @@ class Partitioner:
             val = np.random.rand()
             self.viewpoint_dict[f'region_{i}']['color'] = [val, val, val]
             self.region_pcds.append(region_pcd)
+        # self.calculate_best_path()
 
     def run(self, pcd):
         """ Start the worker thread. """
@@ -903,45 +944,11 @@ class Partitioner:
 
 if __name__ == "__main__":
     partitioner = Partitioner()
-    model = o3d.io.read_triangle_mesh(
-        "/home/col/Inspection/Parts/2_5D_coupon.stl")
-    model.scale(100, [0, 0, 0])
 
-    pcd = model.sample_points_uniformly(number_of_points=100000)
-    pcd.estimate_normals()
-    pcd.normalize_normals()
-    pcd.paint_uniform_color([0.5, 0.5, 0.5])
-    npcd = NPCD.from_o3d_point_cloud(pcd)
+    # Example usage
+    points = [np.array([0, 0, 0]), np.array([1, 1, 1]),
+              np.array([2, 2, 2]), np.array([3, 3, 3])]
+    best_path, min_distance = partitioner.traveling_salesperson(points)
 
-    vis = o3d.visualization.Visualizer()
-    vis.create_window()
-    vis.add_geometry(model)
-    # vis.add_geometry(pcd)
-    # vis.run()
-
-    progress_queue = Queue()
-    result_queue = Queue()
-
-    process = Process(
-        target=partitioner.rg_not_smart_partition_worker, args=(npcd, progress_queue, result_queue))
-    process.start()
-
-    while process.is_alive():
-        while not progress_queue.empty():
-            progress = progress_queue.get()
-            print(f'Progress: {progress*100:.2f}%')
-        while not result_queue.empty():
-            region_npcds = result_queue.get()
-            print(f'Number of regions: {len(region_npcds)}')
-
-    process.join()
-    print("Process finished")
-
-    # region_pcds = partitioner.smart_partition()
-    for i in range(len(region_npcds)):
-        region_pcd = region_npcds[i].get_o3d_point_cloud()
-        region_pcd.paint_uniform_color(
-            [np.random.rand(), np.random.rand(), np.random.rand()])
-        vis.add_geometry(region_pcd)
-
-    vis.run()
+    print("Best path:", best_path)
+    print("Minimum distance:", min_distance)

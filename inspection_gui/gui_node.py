@@ -190,36 +190,38 @@ class MyGui():
         self.scene_ribbon = gui.Horiz(0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
         load_part_button = gui.Button("Load Part")
-        part_model_file_edit = gui.TextEdit()
-        part_model_file_edit.placeholder_text = "/path/to/model.stl"
-        part_model_file_edit.text_value = part_model_file
-        part_model_file_edit.set_on_value_changed(_on_part_model_file_edit)
-        part_model_units_select = gui.Combobox()
-        part_model_units_select.add_item("mm")
-        part_model_units_select.add_item("cm")
-        part_model_units_select.add_item("m")
-        part_model_units_select.add_item("in")
-        part_model_units_select.set_on_selection_changed(
+        load_part_button.set_on_clicked(self._on_load_part_config)
+        self.part_model_file_edit = gui.TextEdit()
+        self.part_model_file_edit.placeholder_text = "/path/to/model.stl"
+        self.part_model_file_edit.text_value = part_model_file
+        self.part_model_file_edit.set_on_value_changed(
+            _on_part_model_file_edit)
+        self.part_model_units_select = gui.Combobox()
+        self.part_model_units_select.add_item("mm")
+        self.part_model_units_select.add_item("cm")
+        self.part_model_units_select.add_item("m")
+        self.part_model_units_select.add_item("in")
+        self.part_model_units_select.set_on_selection_changed(
             _on_part_model_units_select)
-        part_pcd_file_edit = gui.TextEdit()
-        part_pcd_file_edit.placeholder_text = "/path/to/pcd.ply"
-        part_pcd_file_edit.text_value = part_pcd_file
-        part_pcd_file_edit.set_on_value_changed(_on_part_pcd_file_edit)
-        part_pcd_units_select = gui.Combobox()
-        part_pcd_units_select.add_item("mm")
-        part_pcd_units_select.add_item("cm")
-        part_pcd_units_select.add_item("m")
-        part_pcd_units_select.add_item("in")
-        part_pcd_units_select.set_on_selection_changed(
+        self.part_pcd_file_edit = gui.TextEdit()
+        self.part_pcd_file_edit.placeholder_text = "/path/to/pcd.ply"
+        self.part_pcd_file_edit.text_value = part_pcd_file
+        self.part_pcd_file_edit.set_on_value_changed(_on_part_pcd_file_edit)
+        self.part_pcd_units_select = gui.Combobox()
+        self.part_pcd_units_select.add_item("mm")
+        self.part_pcd_units_select.add_item("cm")
+        self.part_pcd_units_select.add_item("m")
+        self.part_pcd_units_select.add_item("in")
+        self.part_pcd_units_select.set_on_selection_changed(
             _on_part_pcd_units_select)
 
         grid = gui.VGrid(3, 0.25 * em)
         grid.add_child(gui.Label("Model: "))
-        grid.add_child(part_model_file_edit)
-        grid.add_child(part_model_units_select)
+        grid.add_child(self.part_model_file_edit)
+        grid.add_child(self.part_model_units_select)
         grid.add_child(gui.Label("Point Cloud: "))
-        grid.add_child(part_pcd_file_edit)
-        grid.add_child(part_pcd_units_select)
+        grid.add_child(self.part_pcd_file_edit)
+        grid.add_child(self.part_pcd_units_select)
 
         # Attempt to add Material Icons to button
         # 0xE037, 0xE034
@@ -475,10 +477,10 @@ class MyGui():
         self.fov_height_px = self.config_dict['camera']['fov']['height_px']
         self.fov_width_mm = self.config_dict['camera']['fov']['width_mm']
         self.fov_height_mm = self.config_dict['camera']['fov']['height_mm']
-        self.roi_width = self.config_dict['camera']['roi']['width']
-        self.roi_height = self.config_dict['camera']['roi']['height']
+        self.roi_width = self.config_dict['camera']['roi']['width_px']
+        self.roi_height = self.config_dict['camera']['roi']['height_px']
         self.dof = self.config_dict['camera']['dof_mm']
-        self.focal_distance = self.config_dict['camera']['focal_distance_mm']
+        self.focal_distance_mm = self.config_dict['camera']['focal_distance_mm']
 
         # PARTITIONER SETTINGS
         self.viewpoint_dict = None
@@ -490,7 +492,7 @@ class MyGui():
         self.partitioner.fov_width = self.fov_width_mm * \
             (self.roi_width/self.fov_width_px) / 10
 
-        self.partitioner.focal_distance = self.focal_distance / 10
+        self.partitioner.focal_distance = self.focal_distance_mm / 10
 
         # self.partitioning_progress_queue = Queue()
         # self.partitioning_results_queue = Queue()
@@ -539,8 +541,8 @@ class MyGui():
 
         def _on_focal_distance_edit(value):
             self.config_dict['camera']['focal_distance_mm'] = value
-            self.focal_distance = value
-            self.partitioner.focal_distance = value
+            self.focal_distance_mm = value
+            self.partitioner.focal_distance = value / 10
 
         def _on_viewpoint_generation_button_clicked():
             # npcd = NPCD.from_o3d_point_cloud(self.part_point_cloud)
@@ -557,52 +559,52 @@ class MyGui():
 
         fov_px_grid = gui.VGrid(2, 0.25 * em)
         fov_px_grid.add_child(gui.Label("width (px): "))
-        width_edit = gui.NumberEdit(gui.NumberEdit.Type.INT)
-        width_edit.set_on_value_changed(_on_fov_width_px_edit)
-        width_edit.int_value = self.fov_width_px
-        fov_px_grid.add_child(width_edit)
+        self.fov_width_px_edit = gui.NumberEdit(gui.NumberEdit.Type.INT)
+        self.fov_width_px_edit.set_on_value_changed(_on_fov_width_px_edit)
+        self.fov_width_px_edit.int_value = self.fov_width_px
+        fov_px_grid.add_child(self.fov_width_px_edit)
         fov_px_grid.add_child(gui.Label("height (px): "))
-        height_edit = gui.NumberEdit(gui.NumberEdit.Type.INT)
-        height_edit.set_on_value_changed(_on_fov_height_px_edit)
-        height_edit.int_value = self.fov_height_px
-        fov_px_grid.add_child(height_edit)
+        self.fov_height_px_edit = gui.NumberEdit(gui.NumberEdit.Type.INT)
+        self.fov_height_px_edit.set_on_value_changed(_on_fov_height_px_edit)
+        self.fov_height_px_edit.int_value = self.fov_height_px
+        fov_px_grid.add_child(self.fov_height_px_edit)
 
         fov_mm_grid = gui.VGrid(2, 0.25 * em)
         fov_mm_grid.add_child(gui.Label("width (mm): "))
-        width_edit = gui.NumberEdit(gui.NumberEdit.Type.DOUBLE)
-        width_edit.set_on_value_changed(_on_fov_width_mm_edit)
-        width_edit.double_value = self.fov_width_mm
-        fov_mm_grid.add_child(width_edit)
+        self.fov_width_mm_edit = gui.NumberEdit(gui.NumberEdit.Type.DOUBLE)
+        self.fov_width_mm_edit.set_on_value_changed(_on_fov_width_mm_edit)
+        self.fov_width_mm_edit.double_value = self.fov_width_mm
+        fov_mm_grid.add_child(self.fov_width_mm_edit)
         fov_mm_grid.add_child(gui.Label("height (mm): "))
-        height_edit = gui.NumberEdit(gui.NumberEdit.Type.DOUBLE)
-        height_edit.set_on_value_changed(_on_fov_height_mm_edit)
-        height_edit.double_value = self.fov_height_mm
-        fov_mm_grid.add_child(height_edit)
+        self.fov_height_mm_edit = gui.NumberEdit(gui.NumberEdit.Type.DOUBLE)
+        self.fov_height_mm_edit.set_on_value_changed(_on_fov_height_mm_edit)
+        self.fov_height_mm_edit.double_value = self.fov_height_mm
+        fov_mm_grid.add_child(self.fov_height_mm_edit)
 
         roi_grid = gui.VGrid(2, 0.25 * em)
         roi_grid.add_child(gui.Label("width (px): "))
-        width_edit = gui.NumberEdit(gui.NumberEdit.Type.INT)
-        width_edit.set_on_value_changed(_on_roi_width_px_edit)
-        width_edit.int_value = self.roi_width
-        roi_grid.add_child(width_edit)
+        self.roi_width_edit = gui.NumberEdit(gui.NumberEdit.Type.INT)
+        self.roi_width_edit.set_on_value_changed(_on_roi_width_px_edit)
+        self.roi_width_edit.int_value = self.roi_width
+        roi_grid.add_child(self.roi_width_edit)
         roi_grid.add_child(gui.Label("height (px): "))
-        height_edit = gui.NumberEdit(gui.NumberEdit.Type.INT)
-        height_edit.set_on_value_changed(_on_roi_height_edit)
-        height_edit.int_value = self.roi_height
-        roi_grid.add_child(height_edit)
+        self.roi_height_edit = gui.NumberEdit(gui.NumberEdit.Type.INT)
+        self.roi_height_edit.set_on_value_changed(_on_roi_height_edit)
+        self.roi_height_edit.int_value = self.roi_height
+        roi_grid.add_child(self.roi_height_edit)
 
-        dof_edit = gui.NumberEdit(gui.NumberEdit.Type.DOUBLE)
-        dof_edit.double_value = self.dof
-        dof_edit.set_on_value_changed(_on_dof_edit)
-        focal_distance_edit = gui.NumberEdit(gui.NumberEdit.Type.DOUBLE)
-        focal_distance_edit.double_value = self.focal_distance
-        focal_distance_edit.set_on_value_changed(_on_focal_distance_edit)
+        self.dof_edit = gui.NumberEdit(gui.NumberEdit.Type.DOUBLE)
+        self.dof_edit.double_value = self.dof
+        self.dof_edit.set_on_value_changed(_on_dof_edit)
+        self.focal_distance_edit = gui.NumberEdit(gui.NumberEdit.Type.DOUBLE)
+        self.focal_distance_edit.double_value = self.focal_distance_mm
+        self.focal_distance_edit.set_on_value_changed(_on_focal_distance_edit)
 
         dof_focal_distance_grid = gui.VGrid(2, 0.25 * em)
         dof_focal_distance_grid.add_child(gui.Label("Depth of focus (mm): "))
-        dof_focal_distance_grid.add_child(dof_edit)
+        dof_focal_distance_grid.add_child(self.dof_edit)
         dof_focal_distance_grid.add_child(gui.Label("Focal distance (mm): "))
-        dof_focal_distance_grid.add_child(focal_distance_edit)
+        dof_focal_distance_grid.add_child(self.focal_distance_edit)
 
         self.generate_viewpoints_button = gui.Button("Generate Viewpoints")
         self.generate_viewpoints_button.set_on_clicked(
@@ -704,7 +706,14 @@ class MyGui():
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
         horiz.add_child(gui.Button("Focus"))
         horiz.add_child(gui.Button("Move"))
-        horiz.add_child(gui.Button("Capture"))
+
+        def _on_capture_image():
+            file_path = '/home/col/Inspection/Parts/image.jpg'
+            self.ros_thread.capture_image(file_path)
+
+        self.capture_image_button = gui.Button("Capture")
+        self.capture_image_button.set_on_clicked(_on_capture_image)
+        horiz.add_child(self.capture_image_button)
         # action_grid.add_child(horiz)
 
         go_button = gui.Button(" Go ")
@@ -736,7 +745,7 @@ class MyGui():
         horiz.add_fixed(0.5 * em)
         horiz.add_child(gui.Button("Focus"))
         horiz.add_fixed(0.5 * em)
-        horiz.add_child(gui.Button("Capture"))
+        horiz.add_child(self.capture_image_button)
         horiz.add_fixed(0.5 * em)
         horiz.add_child(go_button)
 
@@ -1028,6 +1037,99 @@ class MyGui():
     def _send_transform(self, T, parent, child):
         self.ros_thread.send_transform(T, parent, child)
 
+    def _on_load_part_config(self):
+        self.config_file = os.path.expanduser(
+            "~") + '/Inspection/Parts/config/blade.yaml'
+        self.config_dict = yaml.load(
+            open(self.config_file), Loader=yaml.FullLoader)
+
+        # Model
+        self.part_model_units = self.config_dict['part']['model_units']
+        part_model_file = self.config_dict['part']['model']
+        self.part_model_file_edit.text_value = part_model_file
+        self._import_model(part_model_file)
+
+        # Part Point Cloud
+        self.part_point_cloud_units = self.config_dict['part']['point_cloud_units']
+        part_pcd_file = self.config_dict['part']['point_cloud']
+        self.part_pcd_file_edit.text_value = part_pcd_file
+        self._import_point_cloud(part_pcd_file)
+
+        # Send updated part frame
+        self.part_frame_parent = self.config_dict['part']['frame']['parent']
+        self.part_frame = self.config_dict['part']['frame']['child']
+        x = self.config_dict['part']['frame']['x']
+        y = self.config_dict['part']['frame']['y']
+        z = self.config_dict['part']['frame']['z']
+        roll = self.config_dict['part']['frame']['roll']
+        pitch = self.config_dict['part']['frame']['pitch']
+        yaw = self.config_dict['part']['frame']['yaw']
+
+        self.part_x_edit.double_value = x
+        self.part_y_edit.double_value = y
+        self.part_z_edit.double_value = z
+        self.part_roll_edit.double_value = roll
+        self.part_pitch_edit.double_value = pitch
+        self.part_yaw_edit.double_value = yaw
+
+        T = np.eye(4)
+        T[0:3, 3] = [x, y, z]
+        T[0:3, 0:3] = o3d.geometry.get_rotation_matrix_from_xyz(
+            [roll, pitch, yaw])
+
+        self.ros_thread.send_transform(
+            T, self.part_frame_parent, self.part_frame)
+
+        # send updated camera frame
+        self.camera_frame_parent = self.config_dict['camera']['frame']['parent']
+        self.camera_frame = self.config_dict['camera']['frame']['child']
+        x = self.config_dict['camera']['frame']['x']
+        y = self.config_dict['camera']['frame']['y']
+        z = self.config_dict['camera']['frame']['z']
+        roll = self.config_dict['camera']['frame']['roll']
+        pitch = self.config_dict['camera']['frame']['pitch']
+        yaw = self.config_dict['camera']['frame']['yaw']
+
+        self.camera_x_edit.double_value = x
+        self.camera_y_edit.double_value = y
+        self.camera_z_edit.double_value = z
+        self.camera_roll_edit.double_value = roll
+        self.camera_pitch_edit.double_value = pitch
+        self.camera_yaw_edit.double_value = yaw
+
+        T = np.eye(4)
+        T[0:3, 3] = [x, y, z]
+        T[0:3, 0:3] = o3d.geometry.get_rotation_matrix_from_xyz(
+            [roll, pitch, yaw])
+
+        self.ros_thread.send_transform(
+            T, self.camera_frame_parent, self.camera_frame)
+
+        self.fov_width_px = self.config_dict['camera']['fov']['width_px']
+        self.fov_height_px = self.config_dict['camera']['fov']['height_px']
+        self.fov_width_mm = self.config_dict['camera']['fov']['width_mm']
+        self.fov_height_mm = self.config_dict['camera']['fov']['height_mm']
+        self.roi_width = self.config_dict['camera']['roi']['width_px']
+        self.roi_height = self.config_dict['camera']['roi']['height_px']
+        self.dof = self.config_dict['camera']['dof_mm']
+        self.focal_distance_mm = self.config_dict['camera']['focal_distance_mm']
+
+        self.fov_width_mm_edit.double_value = self.fov_width_mm
+        self.fov_height_mm_edit.double_value = self.fov_height_mm
+        self.fov_width_px_edit.int_value = self.fov_width_px
+        self.fov_height_px_edit.int_value = self.fov_height_px
+
+        # PARTITIONER SETTINGS
+        self.viewpoint_dict = None
+
+        self.partitioner.fov_height = self.fov_height_mm * \
+            (self.roi_height/self.fov_height_px) / 10
+
+        self.partitioner.fov_width = self.fov_width_mm * \
+            (self.roi_width/self.fov_width_px) / 10
+
+        self.partitioner.focal_distance = self.focal_distance_mm / 10
+
     def _import_model(self, path):
         try:
             self.part_model = o3d.io.read_triangle_mesh(path)
@@ -1117,6 +1219,9 @@ class MyGui():
     def _on_open_dialog_done(self, config_filename):
         self.window.close_dialog()
         self.load_config(config_filename)
+
+    def load_config(path):
+        pass
 
     def _on_menu_save(self):
         pass
@@ -1513,7 +1618,7 @@ class MyGui():
                 (self.roi_width/self.fov_width_px)
             fov_height_m = 0.001*self.fov_height_mm * \
                 (self.roi_height/self.fov_height_px)
-            focal_distance_m = 0.01*self.focal_distance
+            focal_distance_m = 0.001*self.focal_distance_mm
 
             o = np.array([0, 0, 0])
             tl = [-fov_width_m/2, fov_height_m/2, focal_distance_m]

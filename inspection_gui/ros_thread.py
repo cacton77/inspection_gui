@@ -24,6 +24,7 @@ from rcl_interfaces.msg import Parameter
 from rcl_interfaces.srv import ListParameters, DescribeParameters, GetParameters, SetParameters
 
 from inspection_gui.tf2_message_filter import Tf2MessageFilter
+from inspection_srvs.srv import CaptureImage
 
 
 class RosThread(Node):
@@ -37,8 +38,9 @@ class RosThread(Node):
 
         yolov8 = YOLO('yolov8n-seg.pt')
         # self.yolov8_seg = yolov8
-        yolov8.export(format='openvino')
-        self.yolov8_seg = YOLO("yolov8n-seg_openvino_model/")
+        # yolov8.export(format='openvino')
+        # self.yolov8_seg = YOLO("yolov8n-seg_openvino_model/")
+        self.yolov8_seg = yolov8
 
         self.stopped = True        # thread instantiation
         self.t = threading.Thread(target=self.update, args=())
@@ -81,8 +83,8 @@ class RosThread(Node):
 
         self.twist = TwistStamped()
         inference_timer_period = 0.1
-        self.inference_timer = self.create_timer(
-            inference_timer_period, self.inference_timer_callback)
+        # self.inference_timer = self.create_timer(
+        # inference_timer_period, self.inference_timer_callback)
 
         # Send moveit servo command
 
@@ -132,7 +134,7 @@ class RosThread(Node):
         self.camera_node_list_parameters_cli = self.create_client(
             ListParameters, camera_node_name + '/list_parameters')
         if not self.camera_node_list_parameters_cli.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('service not available, waiting again...')
+            self.get_logger().info('List parameters service not available, waiting again...')
         else:
             self.get_logger().info('Connected!')
 
@@ -149,7 +151,7 @@ class RosThread(Node):
         self.camera_node_describe_parameters_cli = self.create_client(
             DescribeParameters, camera_node_name + '/describe_parameters')
         if not self.camera_node_describe_parameters_cli.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('service not available, waiting again...')
+            self.get_logger().info('Describe parameters service not available, waiting again...')
         else:
             req = DescribeParameters.Request()
             req.names = param_names
@@ -169,7 +171,7 @@ class RosThread(Node):
         self.camera_node_get_parameters_cli = self.create_client(
             GetParameters, camera_node_name + '/get_parameters')
         if not self.camera_node_get_parameters_cli.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('service not available, waiting again...')
+            self.get_logger().info('get parameters service not available, waiting again...')
         else:
             req = GetParameters.Request()
             req.names = param_names
@@ -211,11 +213,27 @@ class RosThread(Node):
         self.camera_node_set_parameters_cli = self.create_client(
             SetParameters, 'camera1/set_parameters')
         if not self.camera_node_set_parameters_cli.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('service not available, waiting again...')
+            self.get_logger().info('set parameters service not available, waiting again...')
 
         # Get all frames in tf tree
         self.tfBuffer = tf2_ros.Buffer()
         self.staticTfBroadcaster = tf2_ros.StaticTransformBroadcaster(self)
+
+        # Capture Image Client
+        self.capture_image_cli = self.create_client(
+            CaptureImage, '/capture_image')
+        if not self.capture_image_cli.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('capture image service not available, waiting again...')
+        else:
+            self.get_logger().info('Connected to capture image service!')
+
+    def capture_image(self, file_path):
+        self.get_logger().info('Capturing image...')
+        req = CaptureImage.Request()
+        req.file_path = file_path
+        future = self.capture_image_cli.call_async(req)
+        # rclpy.spin_until_future_complete(self, future)
+        # resp = future.result()
 
     def get_tf_frames(self):
         return self.tfBuffer.all_frames_as_yaml()
