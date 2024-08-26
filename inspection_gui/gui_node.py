@@ -197,7 +197,8 @@ class MyGui():
         part_horiz = gui.Horiz(0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
 
-        load_part_button = gui.Button("Load YAML")
+        self.config_switch = False
+        load_part_button = gui.Button("Load Part")
         load_part_button.set_on_clicked(self._on_load_part_config)
         self.part_model_file_edit = gui.TextEdit()
         self.part_model_file_edit.placeholder_text = "/path/to/model.stl"
@@ -1121,8 +1122,14 @@ class MyGui():
         self.ros_thread.send_transform(T, parent, child)
 
     def _on_load_part_config(self):
-        self.config_file = os.path.expanduser(
-            "~") + '/Inspection/Parts/config/blade.yaml'
+        self.config_switch = not self.config_switch
+
+        if self.config_switch:
+            self.config_file = os.path.expanduser(
+                "~") + '/Inspection/Parts/config/blade.yaml'
+        else:
+            self.config_file = os.path.expanduser(
+                "~") + '/Inspection/Parts/config/default.yaml'
         self.config_dict = yaml.load(
             open(self.config_file), Loader=yaml.FullLoader)
 
@@ -1969,7 +1976,7 @@ class MyGui():
         self.scene_widget.frame = r
 
         tab_frame_top = 1.5*em
-        tab_frame_height = 3.5*em
+        tab_frame_height = 4*em
 
         self.main_tabs.frame = gui.Rect(
             0, tab_frame_top, r.width, tab_frame_top + tab_frame_height)
