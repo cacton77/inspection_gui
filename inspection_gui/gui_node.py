@@ -1151,6 +1151,15 @@ class MyGui():
         for i in range(len(self.defects)):
             self.defect_selection.add_item(self.defects[i]['name'])
 
+        # Regions and Viewpoints
+
+        defect_name = self.defect_selection.selected_text
+        defect_dir = self.inspection_root_path + '/Parts/' + \
+            self.part_model_name + '/Defects/' + defect_name
+        viewpoint_dict_path = defect_dir + '/viewpoint_dict.yaml'
+        if os.path.exists(viewpoint_dict_path):
+            self.load_viewpoints(viewpoint_dict_path)
+
         # Send updated part frame
         self.part_frame_parent = self.config_dict['part']['frame']['parent']
         self.part_frame = self.config_dict['part']['frame']['child']
