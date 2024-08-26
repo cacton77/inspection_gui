@@ -1366,7 +1366,12 @@ class MyGui():
         self.window.close_dialog()
 
     def _on_menu_quit(self):
-        pass
+        # End threads
+        gui.Application.instance.quit()
+
+        rclpy.shutdown()
+        time.sleep(1)
+        exit()
 
     def _on_menu_preferences(self):
         dlg = gui.Dialog("Preferences")
@@ -1942,8 +1947,11 @@ class MyGui():
         with self.lock:
             self.is_done = True
 
-        self.ros_thread.stop()
-        self.reconstruct_thread.stop()
+        gui.Application.instance.quit()
+
+        rclpy.shutdown()
+        time.sleep(1)
+        exit()
 
         return True  # False would cancel the close
 
@@ -2058,8 +2066,6 @@ def main(args=None):
     dpcApp.startThread()
 
     gui.Application.instance.run()
-
-    rclpy.shutdown()
 
 
 if __name__ == '__main__':

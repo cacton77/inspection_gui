@@ -969,8 +969,10 @@ class Partitioner:
 
     def stop(self):
         """ Stop the worker thread. """
+        print("Stopping partitioner thread...")
         self.is_running = False
         self.t.join()
+        print("Partitioner thread stopped.")
 
 
 if __name__ == "__main__":

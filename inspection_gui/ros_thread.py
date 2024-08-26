@@ -488,6 +488,8 @@ class RosThread(Node):
 
     # method to stop reading frames
     def stop(self):
+        print("Stopping ROS thread...")
         self.stopped = True
         self.t.join()
+        print("ROS thread stopped")
         # self.t2.join()

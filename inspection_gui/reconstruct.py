@@ -47,8 +47,10 @@ class ReconstructThread:
         self.live_point_cloud.scale(100.0, center=np.array([0, 0, 0]))
 
     def stop(self):
+        print("Stopping reconstruct thread...")
         self.stopped = True
         self.t.join()
+        print("Reconstruct thread stopped.")
 
     def get_pcd(self):
         return self.live_point_cloud
