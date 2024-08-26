@@ -1727,6 +1727,9 @@ class MyGui():
     def update_point_cloud(self):
         rgb_image, annotated_rgb_image, depth_image, depth_intrinsic, illuminance_image, gphoto2_image, T = self.ros_thread.get_data()
 
+        if T is None:
+            print("NO TF")
+
         rgb_image_o3d = o3d.geometry.Image(rgb_image)
         annotated_rgb_image_o3d = o3d.geometry.Image(annotated_rgb_image)
         depth_image_o3d = o3d.geometry.Image(depth_image)
