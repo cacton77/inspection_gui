@@ -192,7 +192,11 @@ class MyGui():
         # Tab buttons
         self.scene_ribbon = gui.Horiz(0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
-        self.scene_ribbon.add_child(gui.Label("Part: "))
+        scene_ribbon_grid = gui.VGrid(3, 0.25 * em)
+
+        part_horiz = gui.Horiz(0, gui.Margins(
+            0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+
         load_part_button = gui.Button("Load YAML")
         load_part_button.set_on_clicked(self._on_load_part_config)
         self.part_model_file_edit = gui.TextEdit()
@@ -227,14 +231,17 @@ class MyGui():
         grid.add_child(self.part_pcd_file_edit)
         grid.add_child(self.part_pcd_units_select)
 
-        self.scene_ribbon.add_child(load_part_button)
-        self.scene_ribbon.add_fixed(0.5 * em)
-        self.scene_ribbon.add_child(grid)
-        self.scene_ribbon.add_fixed(5 * em)
+        part_horiz.add_child(gui.Label("Part: "))
+        part_horiz.add_child(load_part_button)
+        part_horiz.add_fixed(0.5 * em)
+        part_horiz.add_child(grid)
 
         # Scene ribbon defect panels
 
-        def _on_defect_select(value, i):
+        defect_horiz = gui.Horiz(0, gui.Margins(
+            0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+
+        def _on_defect_select(defect_name, i):
             defect_camera = self.defects[i]['camera']
             self.fov_height_mm = defect_camera['fov']['height_mm']
             self.fov_width_mm = defect_camera['fov']['width_mm']
@@ -248,16 +255,38 @@ class MyGui():
             self.roi_width_edit.int_value = self.roi_width
             self.focal_distance_edit.double_value = self.focal_distance_mm
 
+            self.partitioner.fov_height = self.fov_height_mm * \
+                (self.roi_height/self.fov_height_px) / 10
+
+            self.partitioner.fov_width = self.fov_width_mm * \
+                (self.roi_width/self.fov_width_px) / 10
+
+            self.partitioner.focal_distance = self.focal_distance_mm / 10
+
+            defect_dir = self.inspection_root_path + '/Parts/' + \
+                self.part_model_name + '/Defects/' + defect_name
+
+            # Save the viewpoint dictionary to a yaml file
+            viewpoint_dict_path = defect_dir + '/viewpoint_dict.yaml'
+            if os.path.exists(viewpoint_dict_path):
+                self.load_viewpoints(viewpoint_dict_path)
+
         self.defects = self.config_dict['defects']
 
-        self.scene_ribbon.add_child(gui.Label("Defect Selection:"))
         self.defect_selection = gui.Combobox()
         for i in range(len(self.defects)):
             self.defect_selection.add_item(self.defects[i]['name'])
+
         self.defect_selection.set_on_selection_changed(_on_defect_select)
-        self.scene_ribbon.add_child(self.defect_selection)
-        width = self.window.content_rect.width
-        self.scene_ribbon.add_fixed(width)
+
+        defect_horiz.add_child(gui.Label("Defect Selection:"))
+        defect_horiz.add_child(self.defect_selection)
+        defect_horiz.add_fixed(10 * em)
+
+        scene_ribbon_grid.add_child(part_horiz)
+        scene_ribbon_grid.add_child(defect_horiz)
+
+        self.scene_ribbon.add_child(scene_ribbon_grid)
 
         # Scanner buttons
         # Attempt to add Material Icons to button
@@ -657,7 +686,7 @@ class MyGui():
             self.scene_widget.scene.remove_geometry(
                 f"{old_region_name}_viewpoint")
 
-            old_region = self.viewpoint_dict[old_region_name]
+            old_region = self.viewpoint_dict['regions'][old_region_name]
 
             viewpoint_tf = old_region['viewpoint']
             point_cloud = old_region['point_cloud']
@@ -686,7 +715,8 @@ class MyGui():
                 f"{old_region_name}_line", viewpoint_line, self.line_material)
 
             # get new selected_viewpoint
-            self.selected_viewpoint = self.partitioner.best_path[int(value-1)]
+            self.selected_viewpoint = self.viewpoint_dict['best_path'][int(
+                value-1)]
 
             new_region_name = f"region_{self.selected_viewpoint}"
             self.scene_widget.scene.remove_geometry(new_region_name)
@@ -694,7 +724,7 @@ class MyGui():
             self.scene_widget.scene.remove_geometry(
                 f"{new_region_name}_viewpoint")
 
-            new_region = self.viewpoint_dict[new_region_name]
+            new_region = self.viewpoint_dict['regions'][new_region_name]
 
             viewpoint_tf = new_region['viewpoint']
             point_cloud = new_region['point_cloud']
@@ -1045,6 +1075,13 @@ class MyGui():
 
         self._reset_scene()
 
+        defect_name = self.defect_selection.selected_text
+        defect_dir = self.inspection_root_path + '/Parts/' + \
+            self.part_model_name + '/Defects/' + defect_name
+        viewpoint_dict_path = defect_dir + '/viewpoint_dict.yaml'
+        if os.path.exists(viewpoint_dict_path):
+            self.load_viewpoints(viewpoint_dict_path)
+
         self.scene_widget.setup_camera(
             60, self.scene_widget.scene.bounding_box, [1, 0, 0])
         self.scene_widget.set_view_controls(
@@ -1185,6 +1222,7 @@ class MyGui():
     def _import_model(self, path):
         try:
             self.part_model = o3d.io.read_triangle_mesh(path)
+            self.part_model.compute_vertex_normals()
         except:
             print("Error reading model file")
             return
@@ -1198,6 +1236,17 @@ class MyGui():
             scale = 2.54
         self.part_model.scale(scale, center=(0, 0, 0))
         self.part_point_cloud = None
+
+        # Create a directory for the part model
+        self.part_model_name = os.path.basename(path).split('.')[0]
+        part_path = self.inspection_root_path + '/Parts/' + self.part_model_name
+        if not os.path.exists(part_path):
+            os.makedirs(part_path, exist_ok=True)
+
+        # Save the part model to the part directory
+        o3d.io.write_triangle_mesh(
+            part_path + '/' + self.part_model_name + '.stl', self.part_model)
+
         self._reset_scene()
 
     def _import_point_cloud(self, path):
@@ -1570,6 +1619,90 @@ class MyGui():
         new_pcd.points = o3d.utility.Vector3dVector(points)
         return new_pcd
 
+    def save_viewpoints(self):
+        self.viewpoint_dict = self.partitioner.get_viewpoint_dict()
+        defect_name = self.defect_selection.selected_text
+
+        # If there is not a folder for the defect, create one
+        defect_dir = self.inspection_root_path + '/Parts/' + \
+            self.part_model_name + '/Defects/' + defect_name
+        viewpoint_dir = defect_dir + '/Viewpoints'
+        if not os.path.exists(defect_dir):
+            os.makedirs(viewpoint_dir, exist_ok=True)
+
+        # Delete all items in viewpoint directory
+        for item in os.listdir(viewpoint_dir):
+            os.remove(os.path.join(viewpoint_dir, item))
+
+        # Save the region pcd to the viewpoint directory and remove PointCloud from dictionary
+        for i, (region_name, region) in enumerate(self.viewpoint_dict['regions'].items()):
+            region_pcd_path = viewpoint_dir + '/' + region_name + '.ply'
+            region['point_cloud_path'] = region_pcd_path
+            o3d.io.write_point_cloud(region_pcd_path, region['point_cloud'])
+            del region['point_cloud']
+
+        # Save the viewpoint dictionary to a yaml file
+        viewpoint_dict_path = defect_dir + '/viewpoint_dict.yaml'
+        with open(viewpoint_dict_path, 'w') as file:
+            yaml.dump(self.viewpoint_dict, file)
+
+        return viewpoint_dict_path
+
+    def load_viewpoints(self, viewpoint_dict_path):
+        # Load the viewpoint dictionary from a yaml file
+        # with open(viewpoint_dict_path, 'r') as file:
+        # self.viewpoint_dict = yaml.load(file, Loader=yaml.FullLoader)
+        self.viewpoint_dict = yaml.load(
+            open(viewpoint_dict_path), Loader=yaml.FullLoader)
+
+        for region_name, region in self.viewpoint_dict['regions'].items():
+            region_pcd_path = region['point_cloud_path']
+            region['point_cloud'] = o3d.io.read_point_cloud(region_pcd_path)
+
+        self.scene_widget.scene.remove_geometry(self.part_point_cloud_name)
+
+        selected_index = self.viewpoint_dict['best_path'][self.selected_viewpoint]
+        self.viewpoint_stack.selected_index = selected_index + 1
+        self.viewpoint_slider.enabled = True
+        self.viewpoint_slider.set_limits(
+            1, len(self.viewpoint_dict['regions'].keys()))
+
+        self._reset_scene()
+        self.scene_widget.scene.remove_geometry(
+            self.part_point_cloud_name)
+
+        for i, (region_name, region) in enumerate(self.viewpoint_dict['regions'].items()):
+
+            viewpoint_tf = region['viewpoint']
+            point_cloud = region['point_cloud']
+            origin = region['origin']
+            point = region['point']
+
+            if i == selected_index:
+                color = [0/255, 255/255, 0/255]
+            else:
+                color = region['color']
+
+            point_cloud.paint_uniform_color(color)
+            viewpoint_geom = o3d.geometry.TriangleMesh.create_sphere(
+                radius=1)
+            viewpoint_geom.paint_uniform_color(color)
+            viewpoint_geom.transform(viewpoint_tf)
+
+            viewpoint_line = o3d.geometry.LineSet()
+            viewpoint_line.points = o3d.utility.Vector3dVector(
+                np.array([origin, point]))
+            viewpoint_line.lines = o3d.utility.Vector2iVector(
+                np.array([[0, 1]]))
+            viewpoint_line.paint_uniform_color(color)
+
+            self.scene_widget.scene.add_geometry(
+                f"{region_name}_viewpoint", viewpoint_geom, self.viewpoint_material)
+            self.scene_widget.scene.add_geometry(
+                region_name, point_cloud, self.part_point_cloud_material)
+            self.scene_widget.scene.add_geometry(
+                f"{region_name}_line", viewpoint_line, self.line_material)
+
     def update_point_cloud(self):
         rgb_image, annotated_rgb_image, depth_image, depth_intrinsic, illuminance_image, gphoto2_image, T = self.ros_thread.get_data()
 
@@ -1720,51 +1853,9 @@ class MyGui():
                     self.generate_viewpoints_button.enabled = True
 
                     self.partitioner.stop()
-                    self.viewpoint_dict = self.partitioner.get_viewpoint_dict()
-                    self.scene_widget.scene.remove_geometry(
-                        self.part_point_cloud_name)
 
-                    selected_index = self.partitioner.best_path[self.selected_viewpoint]
-                    self.viewpoint_stack.selected_index = selected_index + 1
-                    self.viewpoint_slider.enabled = True
-                    self.viewpoint_slider.set_limits(
-                        1, len(self.viewpoint_dict.keys()))
-
-                    self._reset_scene()
-                    self.scene_widget.scene.remove_geometry(
-                        self.part_point_cloud_name)
-
-                    for i, (region_name, region) in enumerate(self.viewpoint_dict.items()):
-
-                        viewpoint_tf = region['viewpoint']
-                        point_cloud = region['point_cloud']
-                        origin = region['origin']
-                        point = region['point']
-
-                        if i == selected_index:
-                            color = [0/255, 255/255, 0/255]
-                        else:
-                            color = region['color']
-
-                        point_cloud.paint_uniform_color(color)
-                        viewpoint_geom = o3d.geometry.TriangleMesh.create_sphere(
-                            radius=1)
-                        viewpoint_geom.paint_uniform_color(color)
-                        viewpoint_geom.transform(viewpoint_tf)
-
-                        viewpoint_line = o3d.geometry.LineSet()
-                        viewpoint_line.points = o3d.utility.Vector3dVector(
-                            np.array([origin, point]))
-                        viewpoint_line.lines = o3d.utility.Vector2iVector(
-                            np.array([[0, 1]]))
-                        viewpoint_line.paint_uniform_color(color)
-
-                        self.scene_widget.scene.add_geometry(
-                            f"{region_name}_viewpoint", viewpoint_geom, self.viewpoint_material)
-                        self.scene_widget.scene.add_geometry(
-                            region_name, point_cloud, self.part_point_cloud_material)
-                        self.scene_widget.scene.add_geometry(
-                            f"{region_name}_line", viewpoint_line, self.line_material)
+                    viewpoint_dict_path = self.save_viewpoints()
+                    self.load_viewpoints(viewpoint_dict_path)
 
         # UPDATE MONITOR TAB #########################################################
 

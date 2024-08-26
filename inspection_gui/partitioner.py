@@ -728,6 +728,7 @@ class Partitioner:
 
 # Region growing not added to the smart partition function
 
+
     def rg_not_smart_partition(self, npcd):
         """ Partition PCD into Planar Patches, partition Planar Patches into Regions. """
         print(f'Partitioning part into planar patches:')
@@ -873,9 +874,9 @@ class Partitioner:
         return T, origin, point
 
     def calculate_best_path(self):
-        num_viewpoints = len(self.viewpoint_dict.items())
+        num_viewpoints = len(self.viewpoint_dict['regions'].items())
         points = np.zeros((num_viewpoints, 3))
-        for i, (region_name, region) in enumerate(self.viewpoint_dict.items()):
+        for i, (region_name, region) in enumerate(self.viewpoint_dict['regions'].items()):
             points[i, :] = np.array(region['point'])
         self.best_path, _ = self.nearest_neighbor_tsp(points)
 
@@ -937,19 +938,25 @@ class Partitioner:
         npcd = NPCD.from_o3d_point_cloud(self.pcd)
         region_npcds = self.rg_not_smart_partition(npcd)
         self.region_pcds = []
-        self.viewpoint_dict = {}
+        self.viewpoint_dict = {'best_path': [],
+                               'regions': {}}
         for i, region_npcd in enumerate(region_npcds):
             region_pcd = region_npcd.get_o3d_point_cloud()
             viewpoint, origin, point = self.get_viewpoint(region_pcd)
-            self.viewpoint_dict[f'region_{i}'] = {}
-            self.viewpoint_dict[f'region_{i}']['point_cloud'] = region_pcd
-            self.viewpoint_dict[f'region_{i}']['viewpoint'] = viewpoint
-            self.viewpoint_dict[f'region_{i}']['origin'] = origin
-            self.viewpoint_dict[f'region_{i}']['point'] = point
+            self.viewpoint_dict['regions'][f'region_{i}'] = {}
+            self.viewpoint_dict['regions'][f'region_{i}']['point_cloud'] = region_pcd
+            self.viewpoint_dict['regions'][f'region_{i}']['viewpoint'] = viewpoint.tolist(
+            )
+            self.viewpoint_dict['regions'][f'region_{i}']['origin'] = origin.tolist(
+            )
+            self.viewpoint_dict['regions'][f'region_{i}']['point'] = point.tolist(
+            )
             val = np.random.rand()
-            self.viewpoint_dict[f'region_{i}']['color'] = [val, val, val]
+            self.viewpoint_dict['regions'][f'region_{i}']['color'] = [
+                val, val, val]
             self.region_pcds.append(region_pcd)
         self.calculate_best_path()
+        self.viewpoint_dict['best_path'] = self.best_path
         self.progress = 1.0
 
     def run(self, pcd):
