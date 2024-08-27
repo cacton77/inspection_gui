@@ -141,6 +141,7 @@ class RosThread(Node):
         # Macro Camera
         self.get_logger().info('Connecting to camera1 node...')
         camera_node_name = 'camera1'
+        param_names = []
         self.camera_node_list_parameters_cli = self.create_client(
             ListParameters, camera_node_name + '/list_parameters')
         if not self.camera_node_list_parameters_cli.wait_for_service(timeout_sec=1.0):
@@ -154,7 +155,6 @@ class RosThread(Node):
             rclpy.spin_until_future_complete(self, future)
             resp = future.result()
             self.get_logger().info('Got parameters.')
-            param_names = []
             for param_name in resp.result.names:
                 param_names.append(param_name)
 
@@ -248,13 +248,6 @@ class RosThread(Node):
         self.pixel_color.b = 0.0
 
     def pixel_pub_timer_callback(self):
-        if self.capture_image_future is not None:
-            if self.capture_image_future.done():
-                self.capture_image_future = None
-                self.lights_off()
-            else:
-                rclpy.spin_once(self)
-
         self.pixel_pub.publish(self.pixel_color)
 
     def capture_image(self, file_path):

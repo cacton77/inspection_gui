@@ -706,14 +706,19 @@ class MyGui():
         def _on_go_button_clicked():
             self.t0 = time.time()
             self.running = not self.running
-            print(self.running)
+            if self.running:
+                self.go_button.text = " Stop "
+                self.go_button.background_color = gui.Color(0.8, 0.0, 0.0, 1.0)
+            else:
+                self.go_button.text = " Go "
+                self.go_button.background_color = gui.Color(0.0, 0.8, 0.0, 1.0)
 
         self.t0 = 0
         self.running = False
-        go_button = gui.Button(" Go ")
-        go_button.background_color = gui.Color(0.0, 0.8, 0.0, 1.0)
-        go_button.toggleable = True
-        go_button.set_on_clicked(_on_go_button_clicked)
+        self.go_button = gui.Button(" Go ")
+        self.go_button.background_color = gui.Color(0.0, 0.8, 0.0, 1.0)
+        self.go_button.toggleable = True
+        self.go_button.set_on_clicked(_on_go_button_clicked)
 
         horiz = gui.Horiz(0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
@@ -740,7 +745,7 @@ class MyGui():
         horiz.add_fixed(0.5 * em)
         horiz.add_child(self.capture_image_button)
         horiz.add_fixed(0.5 * em)
-        horiz.add_child(go_button)
+        horiz.add_child(self.go_button)
 
         self.action_panel.add_child(horiz)
         # LOG PANEL ################################################################
@@ -1318,6 +1323,8 @@ class MyGui():
 
     def _on_menu_quit(self):
         # End threads
+        self.ros_thread.lights_off()
+
         gui.Application.instance.quit()
 
         rclpy.shutdown()
@@ -1639,7 +1646,6 @@ class MyGui():
         viewpoint_marker_size = fov_height_m/0.3048
 
         for path_step, i in enumerate(best_path):
-            print(i)
 
             region_name = f"region_{i}"
             region = self.viewpoint_dict['regions'][region_name]
@@ -1659,8 +1665,6 @@ class MyGui():
                 color = list(cmap(val))[:3]
                 # color = [val, val, val]
                 region['color'] = color
-
-            print(color)
 
             point_cloud.paint_uniform_color(color)
             viewpoint_geom = o3d.geometry.TriangleMesh.create_sphere(
@@ -2033,6 +2037,9 @@ class MyGui():
     def on_main_window_closing(self):
         with self.lock:
             self.is_done = True
+
+        self.ros_thread.lights_off()
+        time.sleep(0.2)
 
         gui.Application.instance.quit()
 
