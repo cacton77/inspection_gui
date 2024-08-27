@@ -44,6 +44,7 @@ class MyGui():
     MENU_SHOW_VIEWPOINT = 16
     MENU_SHOW_SETTINGS = 17
     MENU_SHOW_ERRORS = 18
+    MENU_SHOW_PATH = 19
     MENU_ABOUT = 21
     GEOM_NAME = "Geometry"
     SCENE_TAB = 0
@@ -158,8 +159,13 @@ class MyGui():
 
         self.line_material = o3d.visualization.rendering.MaterialRecord()
         self.line_material.shader = 'unlitLine'
-        self.line_material.base_color = [1.0, 1.0, 1.0, 1.0]
-        self.line_material.line_width = 2.0
+        self.line_material.base_color = [1.0, 1.0, 1.0, 0.25]
+        self.line_material.line_width = 1.5
+
+        self.selected_line_material = o3d.visualization.rendering.MaterialRecord()
+        self.selected_line_material.shader = 'unlitLine'
+        self.selected_line_material.base_color = [1.0, 1.0, 1.0, 1.0]
+        self.selected_line_material.line_width = 2.0
 
         # Live Point Cloud
         self.live_point_cloud_name = "Point Cloud"
@@ -679,86 +685,11 @@ class MyGui():
         self.viewpoint_progress_bar = gui.ProgressBar()
         self.viewpoint_progress_bar.background_color = gui.Color(0, 1, 0, 0.8)
 
-        def _on_viewpoint_slider_changed(value):
-
-            old_region_name = f"region_{self.selected_viewpoint}"
-            self.scene_widget.scene.remove_geometry(old_region_name)
-            self.scene_widget.scene.remove_geometry(f"{old_region_name}_line")
-            self.scene_widget.scene.remove_geometry(
-                f"{old_region_name}_viewpoint")
-
-            old_region = self.viewpoint_dict['regions'][old_region_name]
-
-            viewpoint_tf = old_region['viewpoint']
-            point_cloud = old_region['point_cloud']
-            origin = old_region['origin']
-            point = old_region['point']
-            color = old_region['color']
-
-            point_cloud.paint_uniform_color(color)
-            viewpoint_geom = o3d.geometry.TriangleMesh.create_sphere(
-                radius=1)
-            viewpoint_geom.paint_uniform_color(color)
-            viewpoint_geom.transform(viewpoint_tf)
-
-            viewpoint_line = o3d.geometry.LineSet()
-            viewpoint_line.points = o3d.utility.Vector3dVector(
-                np.array([origin, point]))
-            viewpoint_line.lines = o3d.utility.Vector2iVector(
-                np.array([[0, 1]]))
-            viewpoint_line.paint_uniform_color(color)
-
-            self.scene_widget.scene.add_geometry(
-                f"{old_region_name}_viewpoint", viewpoint_geom, self.viewpoint_material)
-            self.scene_widget.scene.add_geometry(
-                old_region_name, point_cloud, self.part_point_cloud_material)
-            self.scene_widget.scene.add_geometry(
-                f"{old_region_name}_line", viewpoint_line, self.line_material)
-
-            # get new selected_viewpoint
-            self.selected_viewpoint = self.viewpoint_dict['best_path'][int(
-                value-1)]
-
-            new_region_name = f"region_{self.selected_viewpoint}"
-            self.scene_widget.scene.remove_geometry(new_region_name)
-            self.scene_widget.scene.remove_geometry(f"{new_region_name}_line")
-            self.scene_widget.scene.remove_geometry(
-                f"{new_region_name}_viewpoint")
-
-            new_region = self.viewpoint_dict['regions'][new_region_name]
-
-            viewpoint_tf = new_region['viewpoint']
-            point_cloud = new_region['point_cloud']
-            origin = new_region['origin']
-            point = new_region['point']
-            color = [0.0, 1.0, 0.0]
-
-            point_cloud.paint_uniform_color(color)
-            viewpoint_geom = o3d.geometry.TriangleMesh.create_sphere(
-                radius=1)
-            viewpoint_geom.paint_uniform_color(color)
-            viewpoint_geom.transform(viewpoint_tf)
-
-            viewpoint_line = o3d.geometry.LineSet()
-            viewpoint_line.points = o3d.utility.Vector3dVector(
-                np.array([origin, point]))
-            viewpoint_line.lines = o3d.utility.Vector2iVector(
-                np.array([[0, 1]]))
-            viewpoint_line.paint_uniform_color(color)
-
-            self.scene_widget.scene.add_geometry(
-                f"{new_region_name}_viewpoint", viewpoint_geom, self.viewpoint_material)
-            self.scene_widget.scene.add_geometry(
-                new_region_name, point_cloud, self.part_point_cloud_material)
-            self.scene_widget.scene.add_geometry(
-                f"{new_region_name}_line", viewpoint_line, self.line_material)
-
         self.selected_viewpoint = 0
         self.viewpoint_slider = gui.Slider(gui.Slider.INT)
         self.viewpoint_slider.set_limits(0, 100)
         self.viewpoint_slider.enabled = False
-        self.viewpoint_slider.set_on_value_changed(
-            _on_viewpoint_slider_changed)
+        self.viewpoint_slider.set_on_value_changed(self.select_viewpoint)
         self.viewpoint_stack.add_child(self.viewpoint_progress_bar)
         self.viewpoint_stack.add_child(self.viewpoint_slider)
         self.viewpoint_stack.selected_index = 0
@@ -791,11 +722,17 @@ class MyGui():
         horiz.add_child(self.capture_image_button)
         # action_grid.add_child(horiz)
 
+        def _on_go_button_clicked():
+            self.t0 = time.time()
+            self.running = not self.running
+            print(self.running)
+
+        self.t0 = 0
+        self.running = False
         go_button = gui.Button(" Go ")
         go_button.background_color = gui.Color(0.0, 0.8, 0.0, 1.0)
-        # viewpoint_select = gui.NumberEdit(gui.NumberEdit.Type.INT)
-        # viewpoint_select.int_value = 0
-        # viewpoint_select.set_limits(0, 100)
+        go_button.toggleable = True
+        go_button.set_on_clicked(_on_go_button_clicked)
 
         horiz = gui.Horiz(0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
@@ -999,6 +936,8 @@ class MyGui():
             view_menu.set_checked(MyGui.MENU_SHOW_POINT_CLOUDS, True)
             view_menu.add_item("Show Regions", MyGui.MENU_SHOW_REGIONS)
             view_menu.set_checked(MyGui.MENU_SHOW_REGIONS, True)
+            view_menu.add_item("Show Path", MyGui.MENU_SHOW_PATH)
+            view_menu.set_checked(MyGui.MENU_SHOW_PATH, False)
             view_menu.add_separator()
             # Panel display options
             view_menu.add_item("Viewpoint Generation",
@@ -1066,6 +1005,8 @@ class MyGui():
             MyGui.MENU_SHOW_POINT_CLOUDS, self._on_menu_show_point_clouds)
         w.set_on_menu_item_activated(
             MyGui.MENU_SHOW_REGIONS, self._on_menu_show_regions)
+        w.set_on_menu_item_activated(
+            MyGui.MENU_SHOW_PATH, self._on_menu_show_path)
         w.set_on_menu_item_activated(MyGui.MENU_SHOW_VIEWPOINT,
                                      self._on_menu_toggle_viewpoint_generation_panel)
         w.set_on_menu_item_activated(MyGui.MENU_SHOW_SETTINGS,
@@ -1108,7 +1049,7 @@ class MyGui():
     def _reset_scene(self):
         self.scene_widget.scene.clear_geometry()
         self.scene_widget.scene.add_geometry(
-            'xy axes', self.xy_axes, self.line_material)
+            'xy axes', self.xy_axes, self.selected_line_material)
         if self.part_model is not None:
             self.scene_widget.scene.add_geometry(
                 self.part_model_name, self.part_model, self.part_model_material)
@@ -1150,15 +1091,6 @@ class MyGui():
         self.defect_selection.clear_items()
         for i in range(len(self.defects)):
             self.defect_selection.add_item(self.defects[i]['name'])
-
-        # Regions and Viewpoints
-
-        defect_name = self.defect_selection.selected_text
-        defect_dir = self.inspection_root_path + '/Parts/' + \
-            self.part_model_name + '/Defects/' + defect_name
-        viewpoint_dict_path = defect_dir + '/viewpoint_dict.yaml'
-        if os.path.exists(viewpoint_dict_path):
-            self.load_viewpoints(viewpoint_dict_path)
 
         # Send updated part frame
         self.part_frame_parent = self.config_dict['part']['frame']['parent']
@@ -1223,9 +1155,12 @@ class MyGui():
         self.fov_height_mm_edit.double_value = self.fov_height_mm
         self.fov_width_px_edit.int_value = self.fov_width_px
         self.fov_height_px_edit.int_value = self.fov_height_px
+        self.roi_height_edit.int_value = self.roi_height
+        self.roi_width_edit.int_value = self.roi_width
+        self.dof_edit.double_value = self.dof
+        self.focal_distance_edit.double_value = self.focal_distance_mm
 
         # PARTITIONER SETTINGS
-        self.viewpoint_dict = None
 
         self.partitioner.fov_height = self.fov_height_mm * \
             (self.roi_height/self.fov_height_px) / 10
@@ -1233,7 +1168,19 @@ class MyGui():
         self.partitioner.fov_width = self.fov_width_mm * \
             (self.roi_width/self.fov_width_px) / 10
 
+        self.partitioner.dof = self.dof / 10
         self.partitioner.focal_distance = self.focal_distance_mm / 10
+
+        # Regions and Viewpoints
+
+        defect_name = self.defect_selection.selected_text
+        defect_dir = self.inspection_root_path + '/Parts/' + \
+            self.part_model_name + '/Defects/' + defect_name
+        viewpoint_dict_path = defect_dir + '/viewpoint_dict.yaml'
+        if os.path.exists(viewpoint_dict_path):
+            self.load_viewpoints(viewpoint_dict_path)
+        else:
+            self.viewpoint_dict = None
 
     def _import_model(self, path):
         try:
@@ -1616,6 +1563,9 @@ class MyGui():
     def _on_menu_show_regions(self):
         pass
 
+    def _on_menu_show_path(self):
+        pass
+
     def _on_menu_toggle_viewpoint_generation_panel(self):
         pass
 
@@ -1683,14 +1633,20 @@ class MyGui():
         self.scene_widget.scene.remove_geometry(self.part_point_cloud_name)
 
         selected_index = self.viewpoint_dict['best_path'][self.selected_viewpoint]
-        self.viewpoint_stack.selected_index = selected_index + 1
+
+        self.viewpoint_stack.selected_index = 1
         self.viewpoint_slider.enabled = True
         self.viewpoint_slider.set_limits(
             1, len(self.viewpoint_dict['regions'].keys()))
+        self.viewpoint_slider.int_value = selected_index + 1
 
         self._reset_scene()
         self.scene_widget.scene.remove_geometry(
             self.part_point_cloud_name)
+
+        fov_height_m = 0.001*self.fov_height_mm * \
+            (self.roi_height/self.fov_height_px)
+        viewpoint_marker_size = fov_height_m/0.3048
 
         for i, (region_name, region) in enumerate(self.viewpoint_dict['regions'].items()):
 
@@ -1706,7 +1662,7 @@ class MyGui():
 
             point_cloud.paint_uniform_color(color)
             viewpoint_geom = o3d.geometry.TriangleMesh.create_sphere(
-                radius=1)
+                radius=viewpoint_marker_size)
             viewpoint_geom.paint_uniform_color(color)
             viewpoint_geom.transform(viewpoint_tf)
 
@@ -1722,13 +1678,109 @@ class MyGui():
             self.scene_widget.scene.add_geometry(
                 region_name, point_cloud, self.part_point_cloud_material)
             self.scene_widget.scene.add_geometry(
-                f"{region_name}_line", viewpoint_line, self.line_material)
+                f"{region_name}_line", viewpoint_line, self.selected_line_material)
+
+        # Generate path line
+        path_line = o3d.geometry.LineSet()
+        path_points = []
+        for i in self.viewpoint_dict['best_path']:
+            path_points.append(
+                self.viewpoint_dict['regions'][f'region_{i}']['point'])
+        path_line.points = o3d.utility.Vector3dVector(np.array(path_points))
+        path_line.lines = o3d.utility.Vector2iVector(
+            np.array([[i, i+1] for i in range(len(path_points)-1)]))
+        path_line.paint_uniform_color([228/255, 127/255, 250/255])
+        self.scene_widget.scene.add_geometry(
+            'viewpoint_path', path_line, self.selected_line_material)
+
+    def select_viewpoint(self, value):
+        old_region_name = f"region_{self.selected_viewpoint}"
+        self.scene_widget.scene.remove_geometry(old_region_name)
+        self.scene_widget.scene.remove_geometry(f"{old_region_name}_line")
+        self.scene_widget.scene.remove_geometry(
+            f"{old_region_name}_viewpoint")
+
+        old_region = self.viewpoint_dict['regions'][old_region_name]
+
+        viewpoint_tf = old_region['viewpoint']
+        point_cloud = old_region['point_cloud']
+        origin = old_region['origin']
+        point = old_region['point']
+        color = old_region['color']
+
+        fov_height_m = 0.001*self.fov_height_mm * \
+            (self.roi_height/self.fov_height_px)
+        viewpoint_marker_size = fov_height_m/0.3048
+
+        point_cloud.paint_uniform_color(color)
+        viewpoint_geom = o3d.geometry.TriangleMesh.create_sphere(
+            radius=viewpoint_marker_size)
+        viewpoint_geom.paint_uniform_color(color)
+        viewpoint_geom.transform(viewpoint_tf)
+
+        viewpoint_line = o3d.geometry.LineSet()
+        viewpoint_line.points = o3d.utility.Vector3dVector(
+            np.array([origin, point]))
+        viewpoint_line.lines = o3d.utility.Vector2iVector(
+            np.array([[0, 1]]))
+        viewpoint_line.paint_uniform_color(color)
+
+        self.scene_widget.scene.add_geometry(
+            f"{old_region_name}_viewpoint", viewpoint_geom, self.viewpoint_material)
+        self.scene_widget.scene.add_geometry(
+            old_region_name, point_cloud, self.part_point_cloud_material)
+        self.scene_widget.scene.add_geometry(
+            f"{old_region_name}_line", viewpoint_line, self.selected_line_material)
+
+        # get new selected_viewpoint
+        self.selected_viewpoint = self.viewpoint_dict['best_path'][int(
+            value-1)]
+
+        new_region_name = f"region_{self.selected_viewpoint}"
+        self.scene_widget.scene.remove_geometry(new_region_name)
+        self.scene_widget.scene.remove_geometry(f"{new_region_name}_line")
+        self.scene_widget.scene.remove_geometry(
+            f"{new_region_name}_viewpoint")
+
+        new_region = self.viewpoint_dict['regions'][new_region_name]
+
+        viewpoint_tf = new_region['viewpoint']
+        point_cloud = new_region['point_cloud']
+        origin = new_region['origin']
+        point = new_region['point']
+        color = [0.0, 1.0, 0.0]
+
+        point_cloud.paint_uniform_color(color)
+        viewpoint_geom = o3d.geometry.TriangleMesh.create_sphere(
+            radius=1)
+        viewpoint_geom.paint_uniform_color(color)
+        viewpoint_geom.transform(viewpoint_tf)
+
+        viewpoint_line = o3d.geometry.LineSet()
+        viewpoint_line.points = o3d.utility.Vector3dVector(
+            np.array([origin, point]))
+        viewpoint_line.lines = o3d.utility.Vector2iVector(
+            np.array([[0, 1]]))
+        viewpoint_line.paint_uniform_color(color)
+
+        self.scene_widget.scene.add_geometry(
+            f"{new_region_name}_viewpoint", viewpoint_geom, self.viewpoint_material)
+        self.scene_widget.scene.add_geometry(
+            new_region_name, point_cloud, self.part_point_cloud_material)
+        self.scene_widget.scene.add_geometry(
+            f"{new_region_name}_line", viewpoint_line, self.selected_line_material)
 
     def update_point_cloud(self):
         rgb_image, annotated_rgb_image, depth_image, depth_intrinsic, illuminance_image, gphoto2_image, T = self.ros_thread.get_data()
 
-        if T is None:
-            print("NO TF")
+        if (T == np.eye(4)).all() and self.viewpoint_dict is not None:
+            selected_region_name = f"region_{self.selected_viewpoint}"
+            selected_region = self.viewpoint_dict['regions'][selected_region_name]
+
+            T = np.array(selected_region['viewpoint'])
+            T[0, 3] = 0.01*T[0, 3]
+            T[1, 3] = 0.01*T[1, 3]
+            T[2, 3] = 0.01*T[2, 3]
 
         rgb_image_o3d = o3d.geometry.Image(rgb_image)
         annotated_rgb_image_o3d = o3d.geometry.Image(annotated_rgb_image)
@@ -1841,12 +1893,13 @@ class MyGui():
                 np.array([[0, 1], [0, 2], [0, 3], [0, 4], [1, 2], [2, 4], [4, 3], [3, 1]]))
             main_camera.transform(T)
             main_camera.scale(100.0, center=np.array([0, 0, 0]))
-            main_camera.paint_uniform_color(np.array([255/255, 0/255, 0/255]))
+            main_camera.paint_uniform_color(
+                np.array([0/255, 255/255, 255/255]))
 
             # self.scene_widget.scene.add_geometry(
             # "stereo_camera", stereo_camera, self.line_material)
             self.scene_widget.scene.add_geometry(
-                "main_camera", main_camera, self.line_material)
+                "main_camera", main_camera, self.selected_line_material)
 
             # Add Light Ring
 
@@ -1862,6 +1915,14 @@ class MyGui():
             #     "light_ring", light_ring, self.line_material)
 
             # Partitioning Results
+            if self.running:
+                t1 = time.time()
+                if t1 - self.t0 >= 1:
+                    self.viewpoint_slider.int_value = self.viewpoint_slider.int_value + 1 if self.viewpoint_slider.int_value < len(
+                        self.viewpoint_dict['regions'].keys()) else 1
+                    self.select_viewpoint(self.viewpoint_slider.int_value)
+                    self.t0 = t1
+
             if self.partitioner.is_running:
                 progress = self.partitioner.progress
                 self.viewpoint_progress_bar.value = progress
