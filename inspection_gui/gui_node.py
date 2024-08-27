@@ -771,9 +771,16 @@ class MyGui():
         self.monitor_ribbon = gui.Horiz(0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
 
-        for i in range(10):
-            button = gui.Button(f"Button {i}")
-            self.monitor_ribbon.add_child(button)
+        def _on_light_intensity_changed(value):
+            self.ros_thread.lights_on(value)
+
+        light_intensity_slider = gui.Slider(gui.Slider.INT)
+        light_intensity_slider.set_limits(0, 255)
+        light_intensity_slider.set_on_value_changed(
+            _on_light_intensity_changed)
+
+        self.monitor_ribbon.add_child(gui.Label("Light Intensity: "))
+        self.monitor_ribbon.add_child(light_intensity_slider)
 
         self.monitor_image_panel = gui.Vert(0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
