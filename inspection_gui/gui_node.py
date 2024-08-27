@@ -16,6 +16,7 @@ from matplotlib import colormaps
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from io import BytesIO
 from multiprocessing import Process, Queue
+from inspection_gui.materials import Materials
 from inspection_gui.ros_thread import RosThread
 from inspection_gui.reconstruct import ReconstructThread
 from inspection_gui.partitioner import Partitioner, NPCD
@@ -49,6 +50,14 @@ class MyGui():
     GEOM_NAME = "Geometry"
     SCENE_TAB = 0
     MONITOR_TAB = 1
+
+    part_model_material = Materials.part_model_material
+    viewpoint_material = Materials.viewpoint_material
+    line_material = Materials.line_material
+    selected_line_material = Materials.selected_line_material
+    part_point_cloud_material = Materials.part_point_cloud_material
+    live_point_cloud_material = Materials.live_point_cloud_material
+    best_path_material = Materials.best_path_material
 
     def __init__(self, update_delay=-1):
 
@@ -95,7 +104,7 @@ class MyGui():
 
         ###############################
 
-        self.plot_cmap = 'cubehelix'
+        self.plot_cmap = 'GnBu'
         self.webcam_fig = plt.figure()
 
         # Threads
@@ -133,11 +142,6 @@ class MyGui():
         self.part_model = None
         self.part_model_units = self.config_dict['part']['model_units']
 
-        self.part_model_material = o3d.visualization.rendering.MaterialRecord()
-        self.part_model_material.shader = "defaultLit"
-        self.part_model_material.base_color = [
-            0.8, 0.8, 0.8, 1.0]  # RGBA, Red color
-
         part_model_file = self.config_dict['part']['model']
 
         # Part Point Cloud
@@ -145,35 +149,12 @@ class MyGui():
         self.part_point_cloud = None
         self.part_point_cloud_units = self.config_dict['part']['point_cloud_units']
 
-        self.part_point_cloud_material = o3d.visualization.rendering.MaterialRecord()
-        self.part_point_cloud_material.shader = 'defaultLit'
-        self.part_point_cloud_material.base_color = [1.0, 1.0, 1.0, 1.0]
-        self.part_point_cloud_material.point_size = 8.0
-
         part_pcd_file = self.config_dict['part']['point_cloud']
 
         # Viewpoints etc.
-        self.viewpoint_material = o3d.visualization.rendering.MaterialRecord()
-        self.viewpoint_material.shader = 'defaultUnlit'
-        self.viewpoint_material.base_color = [1.0, 1.0, 1.0, 1.0]
-
-        self.line_material = o3d.visualization.rendering.MaterialRecord()
-        self.line_material.shader = 'unlitLine'
-        self.line_material.base_color = [1.0, 1.0, 1.0, 0.25]
-        self.line_material.line_width = 1.5
-
-        self.selected_line_material = o3d.visualization.rendering.MaterialRecord()
-        self.selected_line_material.shader = 'unlitLine'
-        self.selected_line_material.base_color = [1.0, 1.0, 1.0, 1.0]
-        self.selected_line_material.line_width = 2.0
 
         # Live Point Cloud
         self.live_point_cloud_name = "Point Cloud"
-
-        self.live_point_cloud_material = o3d.visualization.rendering.MaterialRecord()
-        self.live_point_cloud_material.shader = 'defaultUnlit'
-        self.live_point_cloud_material.base_color = [1.0, 1.0, 1.0, 1.0]
-        self.live_point_cloud_material.point_size = 5.0
 
         # Add geometry
         if part_model_file is not None:
@@ -1626,13 +1607,15 @@ class MyGui():
         self.viewpoint_dict = yaml.load(
             open(viewpoint_dict_path), Loader=yaml.FullLoader)
 
+        best_path = self.viewpoint_dict['best_path']
+
         for region_name, region in self.viewpoint_dict['regions'].items():
             region_pcd_path = region['point_cloud_path']
             region['point_cloud'] = o3d.io.read_point_cloud(region_pcd_path)
 
         self.scene_widget.scene.remove_geometry(self.part_point_cloud_name)
 
-        selected_index = self.viewpoint_dict['best_path'][self.selected_viewpoint]
+        selected_index = best_path[self.selected_viewpoint]
 
         self.viewpoint_stack.selected_index = 1
         self.viewpoint_slider.enabled = True
@@ -1648,7 +1631,11 @@ class MyGui():
             (self.roi_height/self.fov_height_px)
         viewpoint_marker_size = fov_height_m/0.3048
 
-        for i, (region_name, region) in enumerate(self.viewpoint_dict['regions'].items()):
+        for path_step, i in enumerate(best_path):
+            print(i)
+
+            region_name = f"region_{i}"
+            region = self.viewpoint_dict['regions'][region_name]
 
             viewpoint_tf = region['viewpoint']
             point_cloud = region['point_cloud']
@@ -1657,8 +1644,16 @@ class MyGui():
 
             if i == selected_index:
                 color = [0/255, 255/255, 0/255]
+                viewpoint_marker_size = 2 * viewpoint_marker_size
             else:
                 color = region['color']
+                val = path_step/len(best_path)
+                cmap = colormaps[self.plot_cmap]
+                color = list(cmap(val))[:3]
+                # color = [val, val, val]
+                region['color'] = color
+
+            print(color)
 
             point_cloud.paint_uniform_color(color)
             viewpoint_geom = o3d.geometry.TriangleMesh.create_sphere(
@@ -1677,10 +1672,13 @@ class MyGui():
                 f"{region_name}_viewpoint", viewpoint_geom, self.viewpoint_material)
             self.scene_widget.scene.add_geometry(
                 region_name, point_cloud, self.part_point_cloud_material)
-            self.scene_widget.scene.add_geometry(
-                f"{region_name}_line", viewpoint_line, self.selected_line_material)
+            # self.scene_widget.scene.add_geometry(
+            # f"{region_name}_line", viewpoint_line, self.selected_line_material)
 
         # Generate path line
+        cmap = colormaps[self.plot_cmap]
+        color = list(cmap(0.5))[:3]
+
         path_line = o3d.geometry.LineSet()
         path_points = []
         for i in self.viewpoint_dict['best_path']:
@@ -1689,9 +1687,9 @@ class MyGui():
         path_line.points = o3d.utility.Vector3dVector(np.array(path_points))
         path_line.lines = o3d.utility.Vector2iVector(
             np.array([[i, i+1] for i in range(len(path_points)-1)]))
-        path_line.paint_uniform_color([228/255, 127/255, 250/255])
+        path_line.paint_uniform_color(color)
         self.scene_widget.scene.add_geometry(
-            'viewpoint_path', path_line, self.selected_line_material)
+            'viewpoint_path', path_line, self.best_path_material)
 
     def select_viewpoint(self, value):
         old_region_name = f"region_{self.selected_viewpoint}"
@@ -1729,8 +1727,8 @@ class MyGui():
             f"{old_region_name}_viewpoint", viewpoint_geom, self.viewpoint_material)
         self.scene_widget.scene.add_geometry(
             old_region_name, point_cloud, self.part_point_cloud_material)
-        self.scene_widget.scene.add_geometry(
-            f"{old_region_name}_line", viewpoint_line, self.selected_line_material)
+        # self.scene_widget.scene.add_geometry(
+        # f"{old_region_name}_line", viewpoint_line, self.selected_line_material)
 
         # get new selected_viewpoint
         self.selected_viewpoint = self.viewpoint_dict['best_path'][int(
@@ -1750,9 +1748,11 @@ class MyGui():
         point = new_region['point']
         color = [0.0, 1.0, 0.0]
 
+        viewpoint_marker_size = 2 * viewpoint_marker_size
+
         point_cloud.paint_uniform_color(color)
         viewpoint_geom = o3d.geometry.TriangleMesh.create_sphere(
-            radius=1)
+            radius=viewpoint_marker_size)
         viewpoint_geom.paint_uniform_color(color)
         viewpoint_geom.transform(viewpoint_tf)
 
@@ -1767,8 +1767,8 @@ class MyGui():
             f"{new_region_name}_viewpoint", viewpoint_geom, self.viewpoint_material)
         self.scene_widget.scene.add_geometry(
             new_region_name, point_cloud, self.part_point_cloud_material)
-        self.scene_widget.scene.add_geometry(
-            f"{new_region_name}_line", viewpoint_line, self.selected_line_material)
+        # self.scene_widget.scene.add_geometry(
+        # f"{new_region_name}_line", viewpoint_line, self.selected_line_material)
 
     def update_point_cloud(self):
         rgb_image, annotated_rgb_image, depth_image, depth_intrinsic, illuminance_image, gphoto2_image, T = self.ros_thread.get_data()

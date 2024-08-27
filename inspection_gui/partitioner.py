@@ -898,8 +898,8 @@ class Partitioner:
             unvisited.remove(current_point)
 
         # Return to the starting point
-        total_distance += euclidean(points[current_point], points[path[0]])
-        path.append(path[0])
+        # total_distance += euclidean(points[current_point], points[path[0]])
+        # path.append(path[0])
 
         return path, total_distance
 
@@ -951,7 +951,7 @@ class Partitioner:
             )
             self.viewpoint_dict['regions'][f'region_{i}']['point'] = point.tolist(
             )
-            val = np.random.rand()
+            val = 0.7*np.random.rand() + 0.3
             self.viewpoint_dict['regions'][f'region_{i}']['color'] = [
                 val, val, val]
             self.region_pcds.append(region_pcd)
