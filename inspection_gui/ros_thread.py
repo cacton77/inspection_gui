@@ -24,6 +24,7 @@ from rcl_interfaces.msg import Parameter
 from rcl_interfaces.srv import ListParameters, DescribeParameters, GetParameters, SetParameters
 
 from inspection_gui.tf2_message_filter import Tf2MessageFilter
+from inspection_gui.focus_monitor import FocusMonitor
 from inspection_srvs.srv import CaptureImage
 from std_msgs.msg import ColorRGBA
 
@@ -58,7 +59,16 @@ class RosThread(Node):
         self.rgb_image = np.zeros((480, 640, 3), dtype=np.uint8)
         self.depth_image = np.zeros((480, 640, 1), dtype=np.float32)
         self.illuminance_image = np.zeros((480, 640, 1), dtype=np.uint8)
+
+        # Main Camera
+        self.focus_monitor = FocusMonitor(0.5, 0.5, 100, 100)
         self.gphoto2_image = np.zeros((576, 1024, 3), dtype=np.uint8)
+        self.focus_metric_dict = {}
+        self.focus_metric_dict['buffer_size'] = 1000
+        self.focus_metric_dict['metrics'] = {}
+        self.focus_metric_dict['metrics']['sobel'] = {}
+        self.focus_metric_dict['metrics']['sobel']['value'] = 1000*[0]
+        self.focus_metric_dict['metrics']['sobel']['time'] = 1000*[0]
 
         self.depth_intrinsic_sub = self.create_subscription(
             Image, "/camera/camera/depth/camera_info", self.depth_intrinsic_callback, 10)
@@ -454,6 +464,32 @@ class RosThread(Node):
     def gphoto2_image_callback(self, msg):
         self.gphoto2_image = self.bridge.imgmsg_to_cv2(
             msg, desired_encoding="rgb8").astype(np.uint8)
+
+        height, width, _ = self.gphoto2_image.shape
+
+        cx = self.focus_monitor.cx
+        cy = self.focus_monitor.cy
+        w = self.focus_monitor.w
+        h = self.focus_monitor.h
+        x0 = int(cx*width - w/2)
+        y0 = int(cy*height - h/2)
+        x1 = int(cx*width + w/2)
+        y1 = int(cy*height + h/2)
+
+        sobel_value, sobel_image = self.focus_monitor.sobel(self.gphoto2_image)
+
+        # self.focus_metric_dict['sobel']['buffer'].append(metrics.)
+
+        if len(self.focus_metric_dict['metrics']['sobel']['value']) > self.focus_metric_dict['buffer_size']:
+            self.focus_metric_dict['metrics']['sobel']['value'].pop(0)
+            self.focus_metric_dict['metrics']['sobel']['time'].pop(0)
+        self.focus_metric_dict['metrics']['sobel']['time'].append(time.time())
+        self.focus_metric_dict['metrics']['sobel']['value'].append(sobel_value)
+        self.focus_metric_dict['metrics']['sobel']['image'] = sobel_image
+
+        cv2.rectangle(self.gphoto2_image, (x0, y0), (x1, y1),
+                      color=(204, 108, 231), thickness=2)
+        #   color=(255, 255, 255), thickness=2)
 
     def get_data(self):
         return self.rgb_image, self.annotated_rgb_image, self.depth_image, self.depth_intrinsic, self.illuminance_image, self.gphoto2_image, self.T
