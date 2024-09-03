@@ -62,6 +62,7 @@ class RosThread(Node):
 
         # Main Camera
         self.focus_monitor = FocusMonitor(0.5, 0.5, 100, 100)
+        self.focus_monitor.state = 'fft'
         self.gphoto2_image = np.zeros((576, 1024, 3), dtype=np.uint8)
         self.focus_metric_dict = {}
         self.focus_metric_dict['buffer_size'] = 1000
@@ -476,7 +477,8 @@ class RosThread(Node):
         x1 = int(cx*width + w/2)
         y1 = int(cy*height + h/2)
 
-        sobel_value, sobel_image = self.focus_monitor.sobel(self.gphoto2_image)
+        focus_value, focus_image = self.focus_monitor.measure_focus(
+            self.gphoto2_image)
 
         # self.focus_metric_dict['sobel']['buffer'].append(metrics.)
 
@@ -484,8 +486,8 @@ class RosThread(Node):
             self.focus_metric_dict['metrics']['sobel']['value'].pop(0)
             self.focus_metric_dict['metrics']['sobel']['time'].pop(0)
         self.focus_metric_dict['metrics']['sobel']['time'].append(time.time())
-        self.focus_metric_dict['metrics']['sobel']['value'].append(sobel_value)
-        self.focus_metric_dict['metrics']['sobel']['image'] = sobel_image
+        self.focus_metric_dict['metrics']['sobel']['value'].append(focus_value)
+        self.focus_metric_dict['metrics']['sobel']['image'] = focus_image
 
         cv2.rectangle(self.gphoto2_image, (x0, y0), (x1, y1),
                       color=(204, 108, 231), thickness=2)

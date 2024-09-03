@@ -960,6 +960,8 @@ class MyGui():
         self.metric_panel.background_color = gui.Color(0, 0, 0, 0.8)
         # self.metric_panel.set_is_open(False)
 
+        horiz = gui.H
+
         grid = gui.VGrid(2, 0.25 * em)
         self.focus_metric_select = gui.Combobox()
         focus_metric_names = FocusMonitor.get_metrics()
@@ -1822,6 +1824,7 @@ class MyGui():
         # Load the viewpoint dictionary from a yaml file
         # with open(viewpoint_dict_path, 'r') as file:
         # self.viewpoint_dict = yaml.load(file, Loader=yaml.FullLoader)
+
         self.viewpoint_dict = yaml.load(
             open(viewpoint_dict_path), Loader=yaml.FullLoader)
 
@@ -1832,15 +1835,6 @@ class MyGui():
             region['point_cloud'] = o3d.io.read_point_cloud(region_pcd_path)
 
         self.scene_widget.scene.remove_geometry(self.part_point_cloud_name)
-
-        selected_index = best_path[self.selected_viewpoint]
-
-        self.viewpoint_stack.selected_index = 1
-        self.viewpoint_slider.enabled = True
-        self.viewpoint_slider.set_limits(
-            1, len(self.viewpoint_dict['regions'].keys()))
-        self.viewpoint_slider.int_value = selected_index + 1
-
         self._reset_scene()
         self.scene_widget.scene.remove_geometry(
             self.part_point_cloud_name)
@@ -1882,14 +1876,23 @@ class MyGui():
                 f"{region_name}_viewpoint", viewpoint_geom, viewpoint_material)
             self.scene_widget.scene.add_geometry(
                 region_name, point_cloud, self.part_point_cloud_material)
-            # self.scene_widget.scene.add_geometry(
-            # f"{region_name}_line", viewpoint_line, self.selected_line_material)
 
-        self.selected_viewpoint = best_path[0]
+        # Set selected viewpoint
+
+        selected_index = best_path[0]
+
+        self.viewpoint_stack.selected_index = 1
+        self.viewpoint_slider.enabled = True
+        self.viewpoint_slider.set_limits(
+            1, len(self.viewpoint_dict['regions'].keys()))
+        self.viewpoint_slider.int_value = selected_index + 1
+
+        # self.selected_viewpoint = best_path[0]
         self.viewpoint_slider.int_value = 1
-        self.select_viewpoint(self.selected_viewpoint)
+        self.select_viewpoint(1)
 
         # Generate path line
+
         cmap = colormaps[self.plot_cmap]
         color = list(cmap(0.5))[:3]
 
@@ -1901,7 +1904,7 @@ class MyGui():
         path_line.points = o3d.utility.Vector3dVector(np.array(path_points))
         path_line.lines = o3d.utility.Vector2iVector(
             np.array([[i, i+1] for i in range(len(path_points)-1)]))
-        # path_line.paint_uniform_color(color)
+
         self.scene_widget.scene.add_geometry(
             'viewpoint_path', path_line, self.best_path_material)
 
@@ -2256,27 +2259,27 @@ class MyGui():
 
             # FOCUS METRIC
 
-            ax = self.focus_metric_figure.add_subplot()
             x_data = np.array(
                 self.ros_thread.focus_metric_dict['metrics']['sobel']['time'])
             y_data = np.array(
                 self.ros_thread.focus_metric_dict['metrics']['sobel']['value'])
-            x_data = np.random.rand(100)
-            y_data = np.random.rand(100)
-            pos = ax.plot(x_data, y_data)
-            # ax.spines[['top', 'right']].set_visible(False)
-            # divider = make_axes_locatable(ax)
+
+            ax1 = self.focus_metric_figure.add_subplot()
+            pos = ax1.plot(x_data, y_data)
+            ax1.spines[['top', 'right']].set_visible(False)
+            # divider = make_axes_locatable(ax1)
             # cax = divider.append_axes("right", size="5%", pad=0.05)
-            # ax.axis('off')
+            # ax1.axis('off')
             buf = BytesIO()
-            plt.savefig(buf, format='png', bbox_inches='tight')
+            # plt.savefig(buf, format='png', bbox_inches='tight')
+            self.focus_metric_figure.savefig(
+                buf, format='png', bbox_inches='tight')
+            self.focus_metric_figure.clf()
             buf.seek(0)
             plot_image = np.frombuffer(buf.getvalue(), dtype=np.uint8)
-            self.focus_metric_figure.clf()
             plot_data_cv2 = cv2.imdecode(
                 plot_image, cv2.IMREAD_UNCHANGED)
-            # plot_data_cv2 = cv2.cvtColor(
-            # plot_data_cv2, cv2.COLOR_BGR2RGB)
+            plot_data_cv2 = cv2.cvtColor(plot_data_cv2, cv2.COLOR_BGR2RGB)
             # Scale image evenly to 1/5 of the window width
             scale = 0.2 * r.width / plot_data_cv2.shape[1]
             plot_data_cv2 = cv2.resize(
@@ -2284,7 +2287,7 @@ class MyGui():
             plot_data_o3d = o3d.geometry.Image(plot_data_cv2)
             self.focus_metric_plot_image.update_image(plot_data_o3d)
 
-            # FOCUS IMAGE
+            # FOCUS # IMAGE
             focus_image = self.ros_thread.focus_metric_dict['metrics']['sobel']['image']
             ax = self.focus_image_figure.add_subplot()
             pos = ax.imshow(focus_image, cmap=self.plot_cmap,
@@ -2490,14 +2493,18 @@ class MyGui():
 
         # Metric Panel
 
-        width = self.metric_panel.calc_preferred_size(
-            layout_context, gui.Widget.Constraints()).width
+        # width = self.metric_panel.calc_preferred_size(
+        # layout_context, gui.Widget.Constraints()).width
+        # Set width to 1/5 the width of the window
+        width = r.width/5
         height = self.metric_panel.calc_preferred_size(
             layout_context, gui.Widget.Constraints()).height
-        if height < 10 * em:
+        height = self.footer_panel.frame.get_top() - main_frame_top
+        if not self.metric_panel.get_is_open():
             width = 7.5 * em
 
         top = main_frame_top + 2*em
+        top = main_frame_top
         left = r.width - width
 
         self.metric_panel.frame = gui.Rect(left, top, width, height)
