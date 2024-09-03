@@ -58,6 +58,7 @@ class MyGui():
     STEREO_DEPTH_TAB = 1
     STEREO_ILLUMINANCE_TAB = 2
 
+    background_color = Materials.background_color
     panel_color = Materials.panel_color
     header_footer_color = Materials.header_footer_color
 
@@ -70,6 +71,8 @@ class MyGui():
     live_point_cloud_material = Materials.live_point_cloud_material
     best_path_material = Materials.best_path_material
     axes_line_material = Materials.axes_line_material
+    grid_line_material = Materials.grid_line_material
+    ground_plane_material = Materials.ground_plane_material
     camera_line_material = Materials.camera_line_material
 
     def __init__(self, update_delay=-1):
@@ -111,9 +114,6 @@ class MyGui():
 
         self.depth_trunc = 1.0
 
-        # Common settings for all panels
-        self.background_color = [22/255, 29/255, 36/255, 1.0]
-
         ###############################
 
         self.plot_cmap = 'GnBu'
@@ -143,7 +143,7 @@ class MyGui():
 
         self.xy_axes = o3d.geometry.LineSet()
         self.xy_axes.points = o3d.utility.Vector3dVector(
-            np.array([[-10000, 0, 0], [10000, 0, 0], [0, -10000, 0], [0, 10000, 0]]))
+            np.array([[-1, 0, 0], [1, 0, 0], [0, -1, 0], [0, 1, 0]]))
         self.xy_axes.lines = o3d.utility.Vector2iVector(
             np.array([[0, 1], [2, 3]]))
         self.xy_axes.colors = o3d.utility.Vector3dVector(
@@ -589,7 +589,7 @@ class MyGui():
 
         # LIGHTS PANEL ###############################################################
 
-        self.lights_panel = gui.CollapsableVert("Lights", 0, gui.Margins(
+        self.lights_panel = gui.CollapsableVert("Light Control", 0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
         self.lights_panel.background_color = self.panel_color
         self.lights_panel.set_is_open(False)
@@ -607,7 +607,7 @@ class MyGui():
 
         # VIEWPOINT GENERATION PANEL ###############################################
 
-        self.viewpoint_generation_panel = gui.CollapsableVert("Viewpoint Generation", 0, gui.Margins(
+        self.viewpoint_generation_panel = gui.CollapsableVert("Viewpoints", 0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
         self.viewpoint_generation_panel.background_color = self.panel_color
         self.viewpoint_generation_panel.set_is_open(False)
@@ -1121,13 +1121,18 @@ class MyGui():
         if os.path.exists(viewpoint_dict_path):
             self.load_viewpoints(viewpoint_dict_path)
 
+        # Setup the Camera
         self.scene_widget.setup_camera(
             60, self.scene_widget.scene.bounding_box, [1, 0, 0])
+        # self.scene_widget.set_view_controls(
+        #     gui.SceneWidget.Controls.ROTATE_CAMERA)
         self.scene_widget.set_view_controls(
-            gui.SceneWidget.Controls.ROTATE_CAMERA)
+            gui.SceneWidget.Controls.ROTATE_CAMERA_SPHERE)
         self.scene_widget.scene.show_axes(False)
-        self.scene_widget.scene.show_ground_plane(
-            True, o3d.visualization.rendering.Scene.GroundPlane.XY)
+        self.scene_widget.scene.show_skybox(True)
+        # self.show_ground_plane = True
+        # self.scene_widget.scene.show_ground_plane(
+        # self.show_ground_plane, o3d.visualization.rendering.Scene.GroundPlane.XY)
 
         self.main_tabs.add_tab("3D Scene", self.scene_ribbon)
         self.main_tabs.add_tab("Monitor", self.monitor_ribbon)
@@ -1150,16 +1155,101 @@ class MyGui():
 
     def _reset_scene(self):
         self.scene_widget.scene.clear_geometry()
-        self.scene_widget.scene.add_geometry(
-            'xy axes', self.xy_axes, self.axes_line_material)
+
         if self.part_model is not None:
             self.scene_widget.scene.add_geometry(
                 self.part_model_name, self.part_model, self.part_model_material)
         if self.part_point_cloud is not None:
             self.scene_widget.scene.add_geometry(
                 self.part_point_cloud_name, self.part_point_cloud, self.part_point_cloud_material)
+
+        # Find bounding box region geometry
+        if self.part_model is not None:
+            bbox = self.part_model.get_axis_aligned_bounding_box()
+            # self.scene_widget.scene.add_geometry(
+            # 'bounding box', bbox, self.axes_line_material)
+            # scale xy_axes by the bounding box diagonal
+            diag = bbox.get_max_bound() - bbox.get_min_bound()
+            diag = np.linalg.norm(np.asarray(diag))
+
+            # XY Axes
+
+            self.xy_axes = o3d.geometry.LineSet()
+
+            points = [[-10, 0, 0], [10, 0, 0], [0, -10, 0], [0, 10, 0]]
+            lines = [[0, 1], [2, 3]]
+            colors = [[1, 0, 0], [0, 1, 0]]
+
+            x0, y0, _ = bbox.get_min_bound()
+            # Round x0 and y0 to the nearest 10
+            x0 = 10 * (round(x0 / 10) - 1)
+            y0 = 10 * (round(y0 / 10) - 1)
+            x1, y1, _ = bbox.get_max_bound()
+            x1 = 10 * (round(x1 / 10) + 1)
+            y1 = 10 * (round(y1 / 10) + 1)
+
+            self.xy_axes.points = o3d.utility.Vector3dVector(
+                np.array(points))
+            self.xy_axes.lines = o3d.utility.Vector2iVector(
+                np.array(lines))
+            self.xy_axes.colors = o3d.utility.Vector3dVector(
+                np.array(colors))
+
+            # Grid
+
+            self.grid = o3d.geometry.LineSet()
+            points = []
+            lines = []
+            colors = []
+
+            for x in np.linspace(x0, x1, round((x1 - x0) / 10) + 1):
+                points.append([x, y0, 0])
+                points.append([x, y1, 0])
+                lines.append([len(points)-2, len(points)-1])
+                colors.append([0.3, 0.3, 0.3])
+            for y in np.linspace(y0, y1, round((y1 - y0) / 10) + 1):
+                points.append([x0, y, 0])
+                points.append([x1, y, 0])
+                lines.append([len(points)-2, len(points)-1])
+                colors.append([0.3, 0.3, 0.3])
+
+            self.grid.points = o3d.utility.Vector3dVector(
+                np.array(points))
+            self.grid.lines = o3d.utility.Vector2iVector(
+                np.array(lines))
+            self.grid.colors = o3d.utility.Vector3dVector(
+                np.array(colors))
+
+            ground_plane = o3d.geometry.TriangleMesh()
+            ground_plane.vertices = o3d.utility.Vector3dVector(
+                np.array([[x0, y0, 0], [x1, y0, 0], [x1, y1, 0], [x0, y1, 0]]))
+            ground_plane.triangles = o3d.utility.Vector3iVector(
+                np.array([[0, 1, 2], [0, 2, 3]]))
+            ground_plane.vertex_normals = o3d.utility.Vector3dVector(
+                np.array([[0, 0, 1], [0, 0, 1], [0, 0, 1], [0, 0, 1]]))
+            self.scene_widget.scene.add_geometry(
+                'ground plane', ground_plane, self.ground_plane_material)
+
+        self.scene_widget.scene.add_geometry(
+            'xy axes', self.xy_axes, self.axes_line_material)
+        self.scene_widget.scene.add_geometry(
+            'grid', self.grid, self.grid_line_material)
+
         self.scene_widget.setup_camera(
             60, self.scene_widget.scene.bounding_box, [0, 0, 0])
+
+        self.camera_intrinsic = o3d.camera.PinholeCameraIntrinsic()
+
+        # Add a skybox made from a sphere
+        # skybox_material = o3d.visualization.rendering.MaterialRecord()
+        # skybox_material.base_color = [0.5, 0.5, 0.5, 1.0]
+        # skybox_material.shader = "defaultLit"
+        # sphere_box = o3d.geometry.TriangleMesh.create_box(1000, 1000, 1000)
+        # sphere_box.compute_vertex_normals()
+        # sphere_box.paint_uniform_color([0.5, 0.5, 0.5])
+        # sphere_box.translate([-500, -500, -500])
+        # self.scene_widget.scene.add_geometry(
+        #     'skybox', sphere_box, skybox_material)
 
     def _send_transform(self, T, parent, child):
         self.ros_thread.send_transform(T, parent, child)
@@ -1659,7 +1749,9 @@ class MyGui():
         self.scene_widget.scene.show_axes(True)
 
     def _on_menu_show_grid(self):
-        pass
+        self.scene_widget.scene.show_ground_plane(
+            not self.show_ground_plane, o3d.visualization.rendering.Scene.GroundPlane.XY)
+        self.show_ground_plane = not self.show_ground_plane
 
     def _on_menu_show_model(self):
         pass
@@ -1809,7 +1901,7 @@ class MyGui():
         path_line.points = o3d.utility.Vector3dVector(np.array(path_points))
         path_line.lines = o3d.utility.Vector2iVector(
             np.array([[i, i+1] for i in range(len(path_points)-1)]))
-        path_line.paint_uniform_color(color)
+        # path_line.paint_uniform_color(color)
         self.scene_widget.scene.add_geometry(
             'viewpoint_path', path_line, self.best_path_material)
 
@@ -1869,6 +1961,21 @@ class MyGui():
         origin = new_region['origin']
         point = new_region['point']
         color = [0.0, 1.0, 0.0]
+
+        # Generate UVs from selected viewpoint
+        def project_texture(mesh, texture, intrinsic, extrinsic):
+            vertices = np.asarray(mesh.vertices)
+            vertices_homogeneous = np.hstack(
+                (vertices, np.ones((vertices.shape[0], 1))))
+            projected_vertices = intrinsic.intrinsic_matrix @ (
+                extrinsic @ vertices_homogeneous.T)[:3, :]
+            projected_vertices /= projected_vertices[2, :]
+            uvs = projected_vertices[:2, :].T / \
+                np.array([texture.shape[1], texture.shape[0]])
+            uvs = np.clip(uvs, 0, 1)
+            return uvs
+
+        # uvs = project_texture(self.part_model, texture, intrinsic, T)
 
         viewpoint_marker_size = 2 * viewpoint_marker_size
 
@@ -1982,8 +2089,6 @@ class MyGui():
             self.monitor_image_widget.enabled = False
             self.metric_panel.enabled = False
             self.metric_panel.visible = False
-            self.scene_widget.scene.show_ground_plane(
-                True, o3d.visualization.rendering.Scene.GroundPlane.XY)
             self.main_tabs.selected_tab_index = MyGui.SCENE_TAB
 
             # 3D SCENE WIDGET ##########################################
@@ -2050,7 +2155,7 @@ class MyGui():
             # Partitioning Results
             if self.running:
                 t1 = time.time()
-                if t1 - self.t0 >= 1:
+                if t1 - self.t0 >= 0.1:
                     self.viewpoint_slider.int_value = self.viewpoint_slider.int_value + 1 if self.viewpoint_slider.int_value < len(
                         self.viewpoint_dict['regions'].keys()) else 1
                     self.select_viewpoint(self.viewpoint_slider.int_value)
@@ -2085,8 +2190,8 @@ class MyGui():
             self.metric_panel.visible = True
             # self.monitor_image_panel.enabled = True
             self.monitor_image_panel.visible = True
-            self.scene_widget.scene.show_ground_plane(
-                False, o3d.visualization.rendering.Scene.GroundPlane.XY)
+            # self.scene_widget.scene.show_ground_plane(
+            # False, o3d.visualization.rendering.Scene.GroundPlane.XY)
             self.main_tabs.selected_tab_index = MyGui.MONITOR_TAB
 
             # MONITOR TAB ############################################################
@@ -2297,9 +2402,23 @@ class MyGui():
         self.main_camera_panel.frame = gui.Rect(
             0, top, width, height)
 
-        # Viewpoint Generation Panel
+        # Viewpoints Panel
 
         top = self.main_camera_panel.frame.get_bottom() + 2*em
+
+        width = self.viewpoint_generation_panel.calc_preferred_size(
+            layout_context, gui.Widget.Constraints()).width
+        height = self.viewpoint_generation_panel.calc_preferred_size(
+            layout_context, gui.Widget.Constraints()).height
+        if height < 4 * em:
+            width = 7.5 * em
+
+        self.viewpoint_generation_panel.frame = gui.Rect(
+            0, top, width, height)
+
+        # Light Control Panel
+
+        top = self.viewpoint_generation_panel.frame.get_bottom() + 2*em
 
         width = self.lights_panel.calc_preferred_size(
             layout_context, gui.Widget.Constraints()).width
@@ -2309,20 +2428,6 @@ class MyGui():
             width = 7.5 * em
 
         self.lights_panel.frame = gui.Rect(
-            0, top, width, height)
-
-        # Viewpoint Generation Panel
-
-        top = self.lights_panel.frame.get_bottom() + 2*em
-
-        width = self.viewpoint_generation_panel.calc_preferred_size(
-            layout_context, gui.Widget.Constraints()).width
-        height = self.viewpoint_generation_panel.calc_preferred_size(
-            layout_context, gui.Widget.Constraints()).height
-        if height < 4 * em:
-            width = 10 * em
-
-        self.viewpoint_generation_panel.frame = gui.Rect(
             0, top, width, height)
 
         # Part Frame Panel
