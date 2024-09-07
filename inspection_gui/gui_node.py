@@ -15,14 +15,19 @@ import matplotlib.pyplot as plt
 from matplotlib import colormaps
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from io import BytesIO
-from multiprocessing import Process, Queue
-from inspection_gui.materials import Materials
-from inspection_gui.ros_thread import RosThread
+from inspection_gui.assets.materials import Materials
 from inspection_gui.focus_monitor import FocusMonitor
-from inspection_gui.reconstruct import ReconstructThread
-from inspection_gui.partitioner import Partitioner, NPCD
+from inspection_gui.threads.ros import RosThread
+from inspection_gui.threads.reconstruct import ReconstructThread
+from inspection_gui.threads.partitioner import Partitioner, NPCD
+from inspection_gui.threads.plotting import PlottingThread
+from inspection_gui.threads.lighting import LightMap
+
+# Custom UI Panel definitions
+from inspection_gui.panels.focus_monitor import FocusMonitorPanel
 
 plt.style.use('dark_background')
+# plt.style.use('bmh')
 
 isMacOS = (platform.system() == "Darwin")
 
@@ -116,14 +121,24 @@ class MyGui():
 
         ###############################
 
-        self.plot_cmap = 'GnBu'
+        self.plot_cmap = 'Greys'
         self.webcam_fig = plt.figure()
 
         # Threads
         self.ros_thread = RosThread(stream_id=0)  # 0 id for main camera
         self.reconstruct_thread = ReconstructThread(rate=20)
+        self.plotting_thread = PlottingThread()
+
+        light_locations = np.loadtxt(
+            self.inspection_root_path + '/Lights/led_positions.csv', delimiter=',')
+        shape_mm = (200, 200)
+        dpmm = 10
+        self.light_map = LightMap(shape_mm, dpmm, light_locations)
+
         self.ros_thread.start()  # processing frames in input stream
         self.reconstruct_thread.start()  # processing frames in input stream
+        self.plotting_thread.start()
+        self.light_map.start()
 
         # 3D SCENE ################################################################
         self.scene_widget = gui.SceneWidget()
@@ -589,21 +604,61 @@ class MyGui():
 
         # LIGHTS PANEL ###############################################################
 
-        self.lights_panel = gui.CollapsableVert("Light Control", 0, gui.Margins(
+        self.light_panel = gui.CollapsableVert("Light Control", 0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
-        self.lights_panel.background_color = self.panel_color
-        self.lights_panel.set_is_open(False)
+        self.light_panel.background_color = self.panel_color
+        self.light_panel.set_is_open(False)
+        self.num_leds = 148
 
         def _on_light_intensity_changed(intensity):
-            self.set_lights(intensity)
+            self.light_map.set_intensity(intensity)
+            self.set_pixels()
 
-        light_intensity_slider = gui.Slider(gui.Slider.INT)
-        light_intensity_slider.set_limits(0, 255)
-        light_intensity_slider.set_on_value_changed(
+        def _on_light_position_x_changed(x):
+            self.light_map.set_mu_x(x)
+            self.set_pixels()
+
+        def _on_light_position_y_changed(y):
+            self.light_map.set_mu_y(y)
+            self.set_pixels()
+
+        def _on_light_sigma_changed(sigma):
+            self.light_map.set_sigma(sigma)
+            self.set_pixels()
+
+        # Light map
+        # Import light positions from led_positions.csv
+        self.light_map_image = gui.ImageWidget()
+
+        self.light_intensity_slider = gui.Slider(gui.Slider.INT)
+        self.light_intensity_slider.set_limits(0, 255)
+        self.light_intensity_slider.set_on_value_changed(
             _on_light_intensity_changed)
 
-        self.lights_panel.add_child(gui.Label("Light Intensity: "))
-        self.lights_panel.add_child(light_intensity_slider)
+        self.light_sigma_slider = gui.Slider(gui.Slider.DOUBLE)
+        self.light_sigma_slider.set_limits(0.1, 100)
+        self.light_sigma_slider.set_on_value_changed(
+            _on_light_sigma_changed)
+        self.light_position_x_slider = gui.Slider(gui.Slider.DOUBLE)
+        self.light_position_x_slider.set_limits(-0.5, 0.5)
+        self.light_position_x_slider.set_on_value_changed(
+            _on_light_position_x_changed)
+        self.light_position_y_slider = gui.Slider(gui.Slider.DOUBLE)
+        self.light_position_y_slider.set_limits(-0.5, 0.5)
+        self.light_position_y_slider.set_on_value_changed(
+            _on_light_position_y_changed)
+
+        self.light_panel.add_child(gui.Label("Light Map: "))
+        self.light_panel.add_child(self.light_map_image)
+
+        self.light_panel.add_child(gui.Label("Intensity: "))
+        self.light_panel.add_child(self.light_intensity_slider)
+        self.light_panel.add_child(gui.Label("Sigma: "))
+        self.light_panel.add_child(self.light_sigma_slider)
+        self.light_panel.add_child(gui.Label("X: "))
+        self.light_panel.add_child(self.light_position_x_slider)
+        self.light_panel.add_child(gui.Label("Y: "))
+        self.light_panel.add_child(self.light_position_y_slider)
 
         # VIEWPOINT GENERATION PANEL ###############################################
 
@@ -910,7 +965,7 @@ class MyGui():
         self.log_panel = gui.CollapsableVert("Log", 0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
         self.log_panel.background_color = gui.Color(
-            10/255, 10/255, 10/255, 1.0)
+            36/255, 36/255, 36/255, 1.0)
         self.ros_log_text = gui.ListView()
         self.ros_log_text.background_color = gui.Color(0, 0, 0, 0.8)
         self.ros_log_text.enabled = False
@@ -952,21 +1007,30 @@ class MyGui():
         self.monitor_image_panel.enabled = False
         self.monitor_image_panel.visible = False
 
+        # RIGHT PANEL ###############################################################
+
+        self.right_panel_tabs = gui.TabControl()
+
         # METRIC PANEL ########################
 
-        self.metric_panel = gui.CollapsableVert("Metrics", 0, gui.Margins(
+        self.focus_monitor_panel = FocusMonitorPanel(0.25, em)
+        self.metric_panel = gui.CollapsableVert("", 0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
         # self.metric_panel.background_color = self.panel_color
+        self.focus_monitor_panel.set_background_color(gui.Color(0, 0, 0, 0.8))
         self.metric_panel.background_color = gui.Color(0, 0, 0, 0.8)
         # self.metric_panel.set_is_open(False)
 
-        horiz = gui.H
+        focus_vert = gui.Vert(0, gui.Margins(
+            0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
 
         grid = gui.VGrid(2, 0.25 * em)
         self.focus_metric_select = gui.Combobox()
         focus_metric_names = FocusMonitor.get_metrics()
         for metric in focus_metric_names:
             self.focus_metric_select.add_item(metric)
+
+        self.focus_monitor_panel.set_metric_options(focus_metric_names)
 
         grid.add_child(gui.Label("Focus Metric: "))
         grid.add_child(self.focus_metric_select)
@@ -977,9 +1041,12 @@ class MyGui():
         self.focus_image_figure = plt.figure()
         self.focus_metric_image = gui.ImageWidget()
 
-        self.metric_panel.add_child(grid)
-        self.metric_panel.add_child(self.focus_metric_plot_image)
-        self.metric_panel.add_child(self.focus_metric_image)
+        focus_vert.add_child(grid)
+        focus_vert.add_child(self.focus_metric_plot_image)
+        focus_vert.add_child(self.focus_metric_image)
+
+        self.right_panel_tabs.add_tab("Focus", focus_vert)
+        self.metric_panel.add_child(self.right_panel_tabs)
 
         # ---- Menu ----
         # The menu is global (because the macOS menu is global), so only create
@@ -1131,7 +1198,7 @@ class MyGui():
         self.scene_widget.set_view_controls(
             gui.SceneWidget.Controls.ROTATE_CAMERA_SPHERE)
         self.scene_widget.scene.show_axes(False)
-        self.scene_widget.scene.show_skybox(True)
+        # self.scene_widget.scene.show_skybox(True)
         # self.show_ground_plane = True
         # self.scene_widget.scene.show_ground_plane(
         # self.show_ground_plane, o3d.visualization.rendering.Scene.GroundPlane.XY)
@@ -1149,7 +1216,7 @@ class MyGui():
         self.window.add_child(self.main_camera_panel)
         self.window.add_child(self.stereo_camera_panel)
         self.window.add_child(self.viewpoint_generation_panel)
-        self.window.add_child(self.lights_panel)
+        self.window.add_child(self.light_panel)
         self.window.add_child(self.metric_panel)
         self.window.set_on_layout(self._on_layout)
 
@@ -1365,6 +1432,9 @@ class MyGui():
         self.partitioner.dof = self.dof / 10
         self.partitioner.focal_distance = self.focal_distance_mm / 10
 
+        # Move selected index to 0
+        self.selected_viewpoint = 0
+
         # Regions and Viewpoints
 
         defect_name = self.defect_selection.selected_text
@@ -1455,8 +1525,13 @@ class MyGui():
         self.ros_thread.send_transform(
             T, self.camera_frame_parent, self.camera_frame)
 
-    def set_lights(self, intensity):
-        self.ros_thread.lights_on(intensity)
+    def set_pixels(self):
+        # Make every tenth pixel white
+        pixel_values = self.light_map.get_pixel_values()
+        pixel_colors = []
+        for value in pixel_values:
+            pixel_colors.append((value, value, value))
+        self.ros_thread.pixels_to(pixel_colors)
 
     def _on_menu_new(self):
         pass
@@ -2029,6 +2104,19 @@ class MyGui():
         self.reconstruct_thread.depth_intrinsic = depth_intrinsic
         self.reconstruct_thread.T = T
 
+        # Content
+
+        r = self.window.content_rect
+
+        # UPDATE LIGHT PANEL ####################################################
+
+        if self.light_panel.get_is_open():
+
+            light_map_cv2 = self.light_map.get_map_image()
+
+            image_o3d = o3d.geometry.Image(light_map_cv2)
+            self.light_map_image.update_image(image_o3d)
+
         # UPDATE STEREO PANEL ####################################################
 
         if self.stereo_camera_panel.get_is_open():
@@ -2043,30 +2131,13 @@ class MyGui():
 
             elif stereo_tab == MyGui.STEREO_DEPTH_TAB:
                 depth_image[depth_image > self.depth_trunc] = 0
-                ax = self.webcam_fig.add_subplot()
-                pos = ax.imshow(depth_image, cmap=self.plot_cmap,
-                                interpolation='none')
-                divider = make_axes_locatable(ax)
-                cax = divider.append_axes("right", size="5%", pad=0.05)
-                cbar = plt.colorbar(pos, cax=cax)
-                ax.axis('off')
-                buf = BytesIO()
-                plt.savefig(buf, format='png', bbox_inches='tight')
-                buf.seek(0)
-                plot_image = np.frombuffer(buf.getvalue(), dtype=np.uint8)
-                self.webcam_fig.clf()
-                plot_depth_image_cv2 = cv2.imdecode(
-                    plot_image, cv2.IMREAD_UNCHANGED)
-                plot_depth_image_cv2 = cv2.cvtColor(
-                    plot_depth_image_cv2, cv2.COLOR_BGR2RGB)
-                # Replace black pixels with transparent pixels
-                plot_depth_image_cv2[np.all(
-                    plot_depth_image_cv2 == [0, 0, 0], axis=-1)] = [255*self.stereo_camera_panel.background_color.red,
-                                                                    255*self.stereo_camera_panel.background_color.green,
-                                                                    255*self.stereo_camera_panel.background_color.blue]
 
-                image_o3d = o3d.geometry.Image(plot_depth_image_cv2)
-                self.depth_image.update_image(image_o3d)
+                self.plotting_thread.update_depth_image(depth_image)
+                depth_image_cv2 = self.plotting_thread.get_depth_image()
+
+                # Replace black pixels with transparent pixels
+                depth_image_o3d = o3d.geometry.Image(depth_image_cv2)
+                self.depth_image.update_image(depth_image_o3d)
 
             # ILLUMINANCE TAB ########################################
 
@@ -2090,8 +2161,8 @@ class MyGui():
             self.monitor_image_panel.enabled = False
             self.monitor_image_panel.visible = False
             self.monitor_image_widget.enabled = False
-            self.metric_panel.enabled = False
-            self.metric_panel.visible = False
+            # self.metric_panel.enabled = False
+            # self.metric_panel.visible = False
             self.main_tabs.selected_tab_index = MyGui.SCENE_TAB
 
             # 3D SCENE WIDGET ##########################################
@@ -2199,8 +2270,6 @@ class MyGui():
 
             # MONITOR TAB ############################################################
 
-            r = self.window.content_rect
-
             width_u = self.monitor_image_panel.frame.width
             height_u = self.monitor_image_panel.frame.height
             width_px = gphoto2_image.shape[1]
@@ -2255,60 +2324,26 @@ class MyGui():
 
             self.monitor_image_widget.update_image(gphoto2_image_o3d)
 
-            # METRIC PANEL ###########################################################
+        # METRIC PANEL ###########################################################
 
-            # FOCUS METRIC
+        if self.metric_panel.get_is_open():
 
-            x_data = np.array(
-                self.ros_thread.focus_metric_dict['metrics']['sobel']['time'])
-            y_data = np.array(
-                self.ros_thread.focus_metric_dict['metrics']['sobel']['value'])
+            focus_metric_data = self.ros_thread.focus_metric_dict['metrics']['sobel']['value']
+            focus_metric_time = self.ros_thread.focus_metric_dict['metrics']['sobel']['time']
+            focus_metric_image = self.ros_thread.focus_metric_dict['metrics']['sobel']['image']
 
-            ax1 = self.focus_metric_figure.add_subplot()
-            pos = ax1.plot(x_data, y_data)
-            ax1.spines[['top', 'right']].set_visible(False)
-            # divider = make_axes_locatable(ax1)
-            # cax = divider.append_axes("right", size="5%", pad=0.05)
-            # ax1.axis('off')
-            buf = BytesIO()
-            # plt.savefig(buf, format='png', bbox_inches='tight')
-            self.focus_metric_figure.savefig(
-                buf, format='png', bbox_inches='tight')
-            self.focus_metric_figure.clf()
-            buf.seek(0)
-            plot_image = np.frombuffer(buf.getvalue(), dtype=np.uint8)
-            plot_data_cv2 = cv2.imdecode(
-                plot_image, cv2.IMREAD_UNCHANGED)
-            plot_data_cv2 = cv2.cvtColor(plot_data_cv2, cv2.COLOR_BGR2RGB)
-            # Scale image evenly to 1/5 of the window width
-            scale = 0.2 * r.width / plot_data_cv2.shape[1]
-            plot_data_cv2 = cv2.resize(
-                plot_data_cv2, (0, 0), fx=scale, fy=scale)
-            plot_data_o3d = o3d.geometry.Image(plot_data_cv2)
-            self.focus_metric_plot_image.update_image(plot_data_o3d)
+            self.plotting_thread.update_focus_metric(
+                focus_metric_time, focus_metric_data, focus_metric_image)
+            focus_metric_plot_cv2 = self.plotting_thread.get_focus_metric_plot()
+            focus_metric_image_cv2 = self.plotting_thread.get_focus_metric_image()
 
-            # FOCUS # IMAGE
-            focus_image = self.ros_thread.focus_metric_dict['metrics']['sobel']['image']
-            ax = self.focus_image_figure.add_subplot()
-            pos = ax.imshow(focus_image, cmap=self.plot_cmap,
-                            interpolation='none')
-            divider = make_axes_locatable(ax)
-            # cax = divider.append_axes("right", size="5%", pad=0.05)
-            # cbar = plt.colorbar(pos, cax=cax)
-            ax.axis('off')
-            buf = BytesIO()
-            plt.savefig(buf, format='png', bbox_inches='tight')
-            buf.seek(0)
-            plot_image = np.frombuffer(buf.getvalue(), dtype=np.uint8)
-            self.focus_image_figure.clf()
-            plot_focus_image_cv2 = cv2.imdecode(
-                plot_image, cv2.IMREAD_UNCHANGED)
-            plot_focus_image_cv2 = cv2.cvtColor(
-                plot_focus_image_cv2, cv2.COLOR_BGR2RGB)
-            image_o3d = o3d.geometry.Image(plot_focus_image_cv2)
-            self.focus_metric_image.update_image(image_o3d)
+            focus_metric_plot_o3d = o3d.geometry.Image(focus_metric_plot_cv2)
+            self.focus_metric_plot_image.update_image(focus_metric_plot_o3d)
 
-        # Update log
+            focus_metric_image_o3d = o3d.geometry.Image(focus_metric_image_cv2)
+            self.focus_metric_image.update_image(focus_metric_image_o3d)
+
+            # Update log
         self.log_list = self.ros_thread.read_log()
         # self.log_list.insert(0, "Log " + str(np.random.randint(1000)))
         # self.log_list = self.log_list[:1000]
@@ -2344,7 +2379,7 @@ class MyGui():
         with self.lock:
             self.is_done = True
 
-        self.set_lights(0)
+        self.pixels_to(self.num_pixels*[0])
         time.sleep(0.2)
 
         gui.Application.instance.quit()
@@ -2423,43 +2458,19 @@ class MyGui():
 
         top = self.viewpoint_generation_panel.frame.get_bottom() + 2*em
 
-        width = self.lights_panel.calc_preferred_size(
+        width = self.light_panel.calc_preferred_size(
             layout_context, gui.Widget.Constraints()).width
-        height = self.lights_panel.calc_preferred_size(
+        width = 25 * em
+        height = self.light_panel.calc_preferred_size(
             layout_context, gui.Widget.Constraints()).height
-        if height < 4 * em:
-            width = 7.5 * em
 
-        self.lights_panel.frame = gui.Rect(
+        if not self.light_panel.get_is_open():
+            width = 7.5 * em
+        else:
+            height = 40 * em
+
+        self.light_panel.frame = gui.Rect(
             0, top, width, height)
-
-        # Part Frame Panel
-
-        width = self.part_frame_panel.calc_preferred_size(
-            layout_context, gui.Widget.Constraints()).width
-        height = self.part_frame_panel.calc_preferred_size(
-            layout_context, gui.Widget.Constraints()).height
-        if height < 10 * em:
-            width = 7.5 * em
-
-        top = main_frame_top + 2*em
-        left = r.width - width
-
-        self.part_frame_panel.frame = gui.Rect(left, top, width, height)
-
-        # camera Frame Panel
-
-        width = self.camera_frame_panel.calc_preferred_size(
-            layout_context, gui.Widget.Constraints()).width
-        height = self.camera_frame_panel.calc_preferred_size(
-            layout_context, gui.Widget.Constraints()).height
-        if height < 10 * em:
-            width = 7.5 * em
-
-        top = self.part_frame_panel.frame.get_bottom() + 2*em
-        left = r.width - width
-
-        self.camera_frame_panel.frame = gui.Rect(left, top, width, height)
 
         # Log Panel
 
@@ -2501,13 +2512,41 @@ class MyGui():
             layout_context, gui.Widget.Constraints()).height
         height = self.footer_panel.frame.get_top() - main_frame_top
         if not self.metric_panel.get_is_open():
-            width = 7.5 * em
+            width = 3 * em
 
         top = main_frame_top + 2*em
         top = main_frame_top
         left = r.width - width
 
         self.metric_panel.frame = gui.Rect(left, top, width, height)
+
+        # Part Frame Panel
+
+        width = self.part_frame_panel.calc_preferred_size(
+            layout_context, gui.Widget.Constraints()).width
+        height = self.part_frame_panel.calc_preferred_size(
+            layout_context, gui.Widget.Constraints()).height
+        if height < 10 * em:
+            width = 7.5 * em
+
+        top = main_frame_top + 2*em
+        left = self.metric_panel.frame.get_left() - width - em
+
+        self.part_frame_panel.frame = gui.Rect(left, top, width, height)
+
+        # camera Frame Panel
+
+        width = self.camera_frame_panel.calc_preferred_size(
+            layout_context, gui.Widget.Constraints()).width
+        height = self.camera_frame_panel.calc_preferred_size(
+            layout_context, gui.Widget.Constraints()).height
+        if height < 10 * em:
+            width = 7.5 * em
+
+        top = self.part_frame_panel.frame.get_bottom() + 2*em
+        left = self.metric_panel.frame.get_left() - width - em
+
+        self.camera_frame_panel.frame = gui.Rect(left, top, width, height)
 
 
 def main(args=None):

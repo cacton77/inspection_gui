@@ -159,7 +159,7 @@ class FocusMonitor:
         y1 = int(self.cy*height + self.h/2)
 
         # Convert the image to grayscale
-        gray_image = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
+        gray_image = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)[y0:y1, x0:x1]
         size = 30
         # Apply FFT to the entire grayscale image
         f = np.fft.fft2(gray_image)
@@ -181,7 +181,7 @@ class FocusMonitor:
         recon = np.abs(recon)
 
         # Calculate the focus value as the variance of the high-frequency components in the ROI
-        focus_value = np.var(recon[y0:y1, x0:x1])
+        focus_value = np.var(recon)
 
         # Normalize the magnitude spectrum for visualization
         normalized_spectrum = cv2.normalize(

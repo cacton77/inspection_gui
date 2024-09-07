@@ -7,24 +7,20 @@ import open3d as o3d
 import numpy as np
 import threading
 import time
-import json
-import matplotlib.pyplot as plt
 import message_filters
-from io import BytesIO
-from math import pi
 from ultralytics import YOLO
 import pytransform3d.rotations as pr
 
 import tf2_ros
 from cv_bridge import CvBridge
-from std_msgs.msg import Float32
 from sensor_msgs.msg import Image
 from geometry_msgs.msg import TwistStamped
 from rcl_interfaces.msg import Parameter
 from rcl_interfaces.srv import ListParameters, DescribeParameters, GetParameters, SetParameters
 
-from inspection_gui.tf2_message_filter import Tf2MessageFilter
+from inspection_gui.threads.tf2_message_filter import Tf2MessageFilter
 from inspection_gui.focus_monitor import FocusMonitor
+from inspection_msgs.msg import PixelStrip
 from inspection_srvs.srv import CaptureImage
 from std_msgs.msg import ColorRGBA
 
@@ -70,6 +66,8 @@ class RosThread(Node):
         self.focus_metric_dict['metrics']['sobel'] = {}
         self.focus_metric_dict['metrics']['sobel']['value'] = 1000*[0]
         self.focus_metric_dict['metrics']['sobel']['time'] = 1000*[0]
+        self.focus_metric_dict['metrics']['sobel']['image'] = np.zeros(
+            (200, 200))
 
         self.depth_intrinsic_sub = self.create_subscription(
             Image, "/camera/camera/depth/camera_info", self.depth_intrinsic_callback, 10)
@@ -98,14 +96,38 @@ class RosThread(Node):
         # self.inference_timer = self.create_timer(
         # inference_timer_period, self.inference_timer_callback)
 
-        # Lights
+        # LIGHTS #########################################################################
 
         self.capture_image_future = None
-        self.pixel_color = ColorRGBA()
-        pixel_pub_timer_period = 0.1
-        self.pixel_pub = self.create_publisher(ColorRGBA, '/pixel_strip', 10)
+        self.pixel_strip_msg = PixelStrip()
+        self.pixel_count = 148
+        self.pixel_strip_msg.pixel_colors = self.pixel_count * \
+            [ColorRGBA(r=0.0, g=0.0, b=0.0)]
+        pixel_pub_timer_period = 0.2
+        self.pixel_pub = self.create_publisher(PixelStrip, '/pixel_strip', 10)
         self.pixel_pub_timer = self.create_timer(
             pixel_pub_timer_period, self.pixel_pub_timer_callback)
+
+        self.get_logger().info('Connecting to light node...')
+        light_node_name = '/pixel_strip'
+        param_names = []
+        self.light_node_get_parameters_cli = self.create_client(
+            GetParameters, light_node_name + '/get_parameters')
+        if not self.light_node_get_parameters_cli.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('get parameters service not available, waiting again...')
+        else:
+            req = GetParameters.Request()
+            req.names = param_names
+            self.get_logger().info('Connected to light node!')
+            self.get_logger().info('Sending get parameters request...')
+            future = self.light_node_get_parameters_cli.call_async(req)
+            rclpy.spin_until_future_complete(self, future)
+            resp = future.result()
+
+            for i in range(len(param_names)):
+                if resp.values[i].type == rclpy.Parameter.Type.INTEGER:
+                    self.get_logger().info(
+                        f'{param_names[i]}: {resp.values[i].integer_value}')
 
         # Send moveit servo command
 
@@ -136,7 +158,6 @@ class RosThread(Node):
         self.twist_pub_timer = self.create_timer(
             self.twist_pub_timer_period, self.twist_pub_timer_callback)
 
-        # Generate first point cloud
         light_ring = o3d.geometry.TriangleMesh.create_cylinder(
             radius=0.1, height=0.01)
         # o3d.io.read_triangle_mesh(
@@ -248,18 +269,21 @@ class RosThread(Node):
         else:
             self.get_logger().info('Connected to capture image service!')
 
-    def lights_on(self, value):
-        self.pixel_color.r = float(value)
-        self.pixel_color.g = float(value)
-        self.pixel_color.b = float(value)
+    def pixels_to(self, rgb_list):
+        pixel_colors = []
+        for i in range(len(rgb_list)):
+            color = ColorRGBA()
+            color.r = float(rgb_list[i][0])
+            color.g = float(rgb_list[i][1])
+            color.b = float(rgb_list[i][2])
+            pixel_colors.append(color)
+        self.pixel_strip_msg.pixel_colors = pixel_colors
 
     def lights_off(self):
-        self.pixel_color.r = 0.0
-        self.pixel_color.g = 0.0
-        self.pixel_color.b = 0.0
+        self.lights_on(0)
 
     def pixel_pub_timer_callback(self):
-        self.pixel_pub.publish(self.pixel_color)
+        self.pixel_pub.publish(self.pixel_strip_msg)
 
     def capture_image(self, file_path):
         self.lights_on(100.0)

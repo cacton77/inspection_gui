@@ -4,7 +4,7 @@ from open3d.visualization.rendering import MaterialRecord
 
 class Materials:
 
-    background_color = [8/255, 15/255, 30/255, 1.0]
+    background_color = [36/255, 37/255, 39/255, 1.0]
 
     panel_color = gui.Color(50/255, 50/255, 50/255, 0.8)
     panel_color = gui.Color(30/255, 30/255, 30/255, 0.8)
@@ -54,6 +54,7 @@ class Materials:
     best_path_material.base_color = [204/255, 108/255, 231/255, 1.0]
     best_path_material.base_color = [0/255, 100/255, 0/255, 1.0]
     best_path_material.base_color = [125/255, 218/255, 88/255, 1.0]
+    best_path_material.base_color = [92/255, 140/255, 207/255, 1.0]
     # best_path_material.base_color = [191/255, 214/255, 65/255, 1.0]
 
     ground_plane_material = MaterialRecord()
@@ -73,4 +74,4 @@ class Materials:
     camera_line_material = MaterialRecord()
     camera_line_material.shader = 'unlitLine'
     camera_line_material.base_color = [204/255, 108/255, 231/255, 1.0]
-    camera_line_material.line_width = 2.0
+    camera_line_material.line_width = 4.0
