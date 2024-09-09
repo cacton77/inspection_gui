@@ -11,6 +11,13 @@ plt.switch_backend('agg')
 
 class PlottingThread():
     def __init__(self):
+        self.stopped = True
+        self.t = threading.Thread(target=self.update_plots)
+        self.t.daemon = True
+
+        # Light Map
+        self.update_light_map_flag = True
+        self.light_map_image_cv2 = np.zeros((100, 100, 3))
 
         # Depth Image
         self.plot_depth_image_flag = True
@@ -31,10 +38,6 @@ class PlottingThread():
         self.focus_metric_image = np.zeros((100, 100))
         self.focus_metric_image_figure = plt.figure()
         self.focus_metric_image_cv2 = np.zeros((100, 100, 3))
-
-        self.stopped = True
-        self.t = threading.Thread(target=self.update_plots)
-        self.t.daemon = True
 
     def start(self):
         self.stopped = False
