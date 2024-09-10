@@ -22,6 +22,7 @@ from inspection_gui.threads.reconstruct import ReconstructThread
 from inspection_gui.threads.partitioner import Partitioner, NPCD
 from inspection_gui.threads.plotting import PlottingThread
 from inspection_gui.threads.lighting import LightMap
+from inspection_gui.threads.moveit import MoveItThread
 
 # Custom UI Panel definitions
 from inspection_gui.panels.focus_monitor import FocusMonitorPanel
@@ -80,6 +81,9 @@ class MyGui():
     ground_plane_material = Materials.ground_plane_material
     camera_line_material = Materials.camera_line_material
 
+    # Flags
+    moving_to_viewpoint_flag = False
+
     def __init__(self, update_delay=-1):
 
         self.config_file = os.path.expanduser(
@@ -126,6 +130,7 @@ class MyGui():
 
         # Threads
         self.ros_thread = RosThread(stream_id=0)  # 0 id for main camera
+        # self.moveit_thread = MoveItThread(name='moveit_py_planning_scene')
         self.reconstruct_thread = ReconstructThread(rate=20)
         self.plotting_thread = PlottingThread()
 
@@ -139,6 +144,7 @@ class MyGui():
         self.reconstruct_thread.start()  # processing frames in input stream
         self.plotting_thread.start()
         self.light_map.start()
+        # self.moveit_thread.start()
 
         # 3D SCENE ################################################################
         self.scene_widget = gui.SceneWidget()
@@ -723,8 +729,10 @@ class MyGui():
         T[0:3, 0:3] = o3d.geometry.get_rotation_matrix_from_xyz(
             [roll, pitch, yaw])
 
+        self.tf_part_to_world = T
+
         self.ros_thread.send_transform(
-            T, self.part_frame_parent, self.part_frame)
+            self.tf_part_to_world, self.part_frame_parent, self.part_frame)
 
         def _on_part_x_edit(x):
             self.part_x_edit.double_value = x
@@ -904,10 +912,13 @@ class MyGui():
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
         horiz.add_child(self.viewpoint_stack)
         action_grid.add_child(horiz)
-        horiz = gui.Horiz(0, gui.Margins(
-            0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
-        horiz.add_child(gui.Button("Focus"))
-        horiz.add_child(gui.Button("Move"))
+
+        self.move_button = gui.Button("Move")
+
+        def _on_move_button_clicked():
+            self.move_to_selected_viewpoint()
+
+        self.move_button.set_on_clicked(_on_move_button_clicked)
 
         # Image capture
         self.image_count = 0
@@ -923,7 +934,6 @@ class MyGui():
 
         self.capture_image_button = gui.Button("Capture")
         self.capture_image_button.set_on_clicked(_on_capture_image)
-        horiz.add_child(self.capture_image_button)
         # action_grid.add_child(horiz)
 
         def _on_go_button_clicked():
@@ -948,7 +958,7 @@ class MyGui():
 
         horiz.add_child(action_grid)
         horiz.add_fixed(0.5 * em)
-        horiz.add_child(gui.Button("Move"))
+        horiz.add_child(self.move_button)
         horiz.add_fixed(0.5 * em)
         horiz.add_child(gui.Button("Focus"))
         horiz.add_fixed(0.5 * em)
@@ -1375,6 +1385,8 @@ class MyGui():
         T[0:3, 0:3] = o3d.geometry.get_rotation_matrix_from_xyz(
             [roll, pitch, yaw])
 
+        self.tf_part_to_world = T
+
         self.ros_thread.send_transform(
             T, self.part_frame_parent, self.part_frame)
 
@@ -1505,6 +1517,8 @@ class MyGui():
         T[0:3, 3] = [x, y, z]
         T[0:3, 0:3] = o3d.geometry.get_rotation_matrix_from_xyz(
             [roll, pitch, yaw])
+
+        self.tf_part_to_world = T
 
         self.ros_thread.send_transform(
             T, self.part_frame_parent, self.part_frame)
@@ -2077,6 +2091,25 @@ class MyGui():
         # self.scene_widget.scene.add_geometry(
         # f"{new_region_name}_line", viewpoint_line, self.selected_line_material)
 
+    def move_to_selected_viewpoint(self):
+        self.moving_to_viewpoint_flag = True
+
+        # Get selected viewpoint
+        selected_region = self.viewpoint_dict['regions'][f'region_{self.selected_viewpoint}']
+        viewpoint = np.array(selected_region['viewpoint'])
+
+        # Convert position to meters
+        viewpoint[0, 3] = viewpoint[0, 3] / 100
+        viewpoint[1, 3] = viewpoint[1, 3] / 100
+        viewpoint[2, 3] = viewpoint[2, 3] / 100
+
+        # Transform viewpoint to world frame
+        tf_part_to_world = np.linalg.inv(self.tf_part_to_world)
+        viewpoint = np.dot(self.tf_part_to_world, viewpoint)
+
+        # Move to viewpoint
+        self.ros_thread.move_to_pose(viewpoint, frame_id='world')
+
     def update_point_cloud(self):
 
         rgb_image, annotated_rgb_image, depth_image, depth_intrinsic, illuminance_image, gphoto2_image, T = self.ros_thread.get_data()
@@ -2227,12 +2260,23 @@ class MyGui():
             #     "light_ring", light_ring, self.line_material)
 
             # Partitioning Results
-            if self.running:
+
+            if self.moving_to_viewpoint_flag:
+                if not self.ros_thread.moving_to_viewpoint_flag:
+                    selected_viewpoint_inspectable = self.ros_thread.last_move_successful
+                    print(
+                        f"Selected viewpoint inspectable: {selected_viewpoint_inspectable}")
+
+                    self.moving_to_viewpoint_flag = False
+                    self.t0 = time.time()
+
+            elif self.running:
                 t1 = time.time()
                 if t1 - self.t0 >= 0.1:
                     self.viewpoint_slider.int_value = self.viewpoint_slider.int_value + 1 if self.viewpoint_slider.int_value < len(
                         self.viewpoint_dict['regions'].keys()) else 1
                     self.select_viewpoint(self.viewpoint_slider.int_value)
+                    self.move_to_selected_viewpoint()
                     self.t0 = t1
 
             if self.partitioner.is_running:

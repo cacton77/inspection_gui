@@ -6,6 +6,7 @@ import cv2  # OpenCV library
 import open3d as o3d
 import numpy as np
 import threading
+import asyncio
 import time
 import message_filters
 from ultralytics import YOLO
@@ -14,7 +15,7 @@ import pytransform3d.rotations as pr
 import tf2_ros
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image
-from geometry_msgs.msg import TwistStamped
+from geometry_msgs.msg import TwistStamped, Pose, PoseStamped
 from rcl_interfaces.msg import Parameter
 from rcl_interfaces.srv import ListParameters, DescribeParameters, GetParameters, SetParameters
 
@@ -22,10 +23,15 @@ from inspection_gui.threads.tf2_message_filter import Tf2MessageFilter
 from inspection_gui.focus_monitor import FocusMonitor
 from inspection_msgs.msg import PixelStrip
 from inspection_srvs.srv import CaptureImage
+from inspection_srvs.srv import MoveToPose
 from std_msgs.msg import ColorRGBA
 
 
 class RosThread(Node):
+
+    moving_to_viewpoint_flag = False
+    last_move_successful = False
+
     # initialization method
     def __init__(self, stream_id=0):
         super().__init__('scanner_node')
@@ -269,6 +275,53 @@ class RosThread(Node):
         else:
             self.get_logger().info('Connected to capture image service!')
 
+        # Create move to pose client
+
+        self.target_pose_publisher = self.create_publisher(
+            PoseStamped, 'move_to_pose_target', 10)
+        self.move_to_pose_cli = self.create_client(
+            MoveToPose, 'inspection/move_to_pose')
+        if not self.move_to_pose_cli.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('moveit path planning service not available, waiting again...')
+        else:
+            self.get_logger().info('Connected to moveit path planning service!')
+
+    def move_to_pose(self, tf, frame_id):
+        self.moving_to_viewpoint = True
+
+        # Turn homogeneous tf into position and quaternion
+        pose_stamped = PoseStamped()
+        pose_stamped.header.frame_id = frame_id
+        pose_stamped.pose.position.x = tf[0, 3]
+        pose_stamped.pose.position.y = tf[1, 3]
+        pose_stamped.pose.position.z = tf[2, 3]
+        q = pr.quaternion_from_matrix(tf[:3, :3])
+        pose_stamped.pose.orientation.x = q[1]
+        pose_stamped.pose.orientation.y = q[2]
+        pose_stamped.pose.orientation.z = q[3]
+        pose_stamped.pose.orientation.w = q[0]
+        self.target_pose_publisher.publish(pose_stamped)
+
+        req = MoveToPose.Request()
+        req.target_pose = pose_stamped
+        self.get_logger().info('Sending move to pose request...')
+        future = self.move_to_pose_cli.call_async(req)
+        future.add_done_callback(self.move_to_pose_callback)
+        # rclpy.spin_until_future_complete(self, future)
+        # resp = future.result()
+        # self.get_logger().info('Move to pose request complete!')
+
+    def move_to_pose_callback(self, future):
+        try:
+            resp = future.result()
+            self.get_logger().info('Move to pose response: %s' % resp.done)
+        except Exception as e:
+            self.get_logger().info(
+                'Service call failed %r' % (e,))
+
+        self.moving_to_viewpoint = False
+        self.last_move_successful = resp.done
+
     def pixels_to(self, rgb_list):
         pixel_colors = []
         for i in range(len(rgb_list)):
@@ -444,6 +497,9 @@ class RosThread(Node):
         self.stopped = False
         self.t.start()    # method passed to thread to read next available frame
         # self.t2.start()
+
+    def start_async_loop(self):
+        asyncio.set_event_loop()
 
     def update(self):
         rclpy.spin(self)
