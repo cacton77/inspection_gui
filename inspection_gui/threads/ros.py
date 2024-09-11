@@ -14,7 +14,7 @@ import pytransform3d.rotations as pr
 
 import tf2_ros
 from cv_bridge import CvBridge
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, CompressedImage
 from geometry_msgs.msg import TwistStamped, Pose, PoseStamped
 from rcl_interfaces.msg import Parameter
 from rcl_interfaces.srv import ListParameters, DescribeParameters, GetParameters, SetParameters
@@ -89,7 +89,7 @@ class RosThread(Node):
         # gphoto2_image_sub = message_filters.Subscriber(self,
         #    Image, "/camera1/image_raw")
         gphoto2_image_sub = self.create_subscription(
-            Image, "/camera1/image_raw", self.gphoto2_image_callback, 10)
+            CompressedImage, "/image_raw/compressed", self.compressed_image_callback, 10)
 
         ts = Tf2MessageFilter(self, [depth_image_sub, rgb_image_sub], 'part_frame',
                               'camera_depth_optical_frame', queue_size=1000)
@@ -544,6 +544,37 @@ class RosThread(Node):
 
     def gphoto2_image_callback(self, msg):
         self.gphoto2_image = self.bridge.imgmsg_to_cv2(
+            msg, desired_encoding="rgb8").astype(np.uint8)
+
+        height, width, _ = self.gphoto2_image.shape
+
+        cx = self.focus_monitor.cx
+        cy = self.focus_monitor.cy
+        w = self.focus_monitor.w
+        h = self.focus_monitor.h
+        x0 = int(cx*width - w/2)
+        y0 = int(cy*height - h/2)
+        x1 = int(cx*width + w/2)
+        y1 = int(cy*height + h/2)
+
+        focus_value, focus_image = self.focus_monitor.measure_focus(
+            self.gphoto2_image)
+
+        # self.focus_metric_dict['sobel']['buffer'].append(metrics.)
+
+        if len(self.focus_metric_dict['metrics']['sobel']['value']) > self.focus_metric_dict['buffer_size']:
+            self.focus_metric_dict['metrics']['sobel']['value'].pop(0)
+            self.focus_metric_dict['metrics']['sobel']['time'].pop(0)
+        self.focus_metric_dict['metrics']['sobel']['time'].append(time.time())
+        self.focus_metric_dict['metrics']['sobel']['value'].append(focus_value)
+        self.focus_metric_dict['metrics']['sobel']['image'] = focus_image
+
+        cv2.rectangle(self.gphoto2_image, (x0, y0), (x1, y1),
+                      color=(204, 108, 231), thickness=2)
+        #   color=(255, 255, 255), thickness=2)
+
+    def compressed_image_callback(self, msg):
+        self.gphoto2_image = self.bridge.compressed_imgmsg_to_cv2(
             msg, desired_encoding="rgb8").astype(np.uint8)
 
         height, width, _ = self.gphoto2_image.shape

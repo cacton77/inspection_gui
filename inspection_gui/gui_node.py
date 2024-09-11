@@ -815,6 +815,8 @@ class MyGui():
         T[0:3, 0:3] = o3d.geometry.get_rotation_matrix_from_xyz(
             [roll, pitch, yaw])
 
+        self.tf_camera_to_tool = T
+
         self.ros_thread.send_transform(
             T, self.camera_frame_parent, self.camera_frame)
 
@@ -2106,6 +2108,10 @@ class MyGui():
         # Transform viewpoint to world frame
         tf_part_to_world = np.linalg.inv(self.tf_part_to_world)
         viewpoint = np.dot(self.tf_part_to_world, viewpoint)
+
+        # Calculate tool0 frame from camera frame
+        # tf_camera_to_tool = np.linalg.inv(self.tf_camera_to_tool)
+        # viewpoint = np.dot(self.tf_camera_to_tool, viewpoint)
 
         # Move to viewpoint
         self.ros_thread.move_to_pose(viewpoint, frame_id='world')
