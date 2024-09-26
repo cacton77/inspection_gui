@@ -22,7 +22,7 @@ from inspection_gui.threads.reconstruct import ReconstructThread
 from inspection_gui.threads.partitioner import Partitioner, NPCD
 from inspection_gui.threads.plotting import PlottingThread
 from inspection_gui.threads.lighting import LightMap
-from inspection_gui.threads.moveit import MoveItThread
+# from inspection_gui.threads.moveit import MoveItThread
 
 # Custom UI Panel definitions
 from inspection_gui.panels.focus_monitor import FocusMonitorPanel
@@ -2116,7 +2116,7 @@ class MyGui():
         # Move to viewpoint
         self.ros_thread.move_to_pose(viewpoint, frame_id='world')
 
-    def update_point_cloud(self):
+    def update_scene(self):
 
         rgb_image, annotated_rgb_image, depth_image, depth_intrinsic, illuminance_image, gphoto2_image, T = self.ros_thread.get_data()
 
@@ -2344,6 +2344,17 @@ class MyGui():
             gphoto2_image = cv2.resize(
                 gphoto2_image, (0, 0), fx=scale, fy=scale)
 
+            # Draw ROI on image
+            # roi_width = int(scale*self.roi_width)
+            # roi_height = int(scale*self.roi_height)
+            # roi_x = int((gphoto2_image.shape[1] - roi_width)/2)
+            # roi_y = int((gphoto2_image.shape[0] - roi_height)/2)
+            # gphoto2_image = cv2.rectangle(
+            #     gphoto2_image, (roi_x, roi_y), (roi_x+roi_width, roi_y+roi_height), (255, 255, 255), 2)
+            # Draw a circle in the center of the image
+            gphoto2_image = cv2.circle(
+                gphoto2_image, (int(gphoto2_image.shape[1]/2), int(gphoto2_image.shape[0]/2)), 10, (255, 255, 255), 1)
+
             if self.pan_pos is not None:
                 frame_origin = (self.monitor_image_widget.frame.get_left(),
                                 self.monitor_image_widget.frame.get_top())
@@ -2414,7 +2425,7 @@ class MyGui():
 
     def update_thread(self):
         def do_update():
-            return self.update_point_cloud()
+            return self.update_scene()
 
         while not self.is_done:
             time.sleep(self.update_delay)
@@ -2423,7 +2434,7 @@ class MyGui():
                 if self.is_done:  # might have changed while sleeping.
                     break
                 gui.Application.instance.post_to_main_thread(
-                    self.window, self.update_point_cloud)
+                    self.window, self.update_scene)
 
     def on_main_window_closing(self):
         with self.lock:
@@ -2442,7 +2453,7 @@ class MyGui():
 
     def on_main_window_tick_event(self):
         # print("tick")
-        return self.update_point_cloud()
+        return self.update_scene()
 
     def _on_layout(self, layout_context):
 

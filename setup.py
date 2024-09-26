@@ -23,7 +23,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'gui_node = inspection_gui.gui_node:main',
+            'gui = inspection_gui.gui:main',
         ],
     },
 )

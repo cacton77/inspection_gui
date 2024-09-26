@@ -21,10 +21,10 @@ from rcl_interfaces.srv import ListParameters, DescribeParameters, GetParameters
 
 from inspection_gui.threads.tf2_message_filter import Tf2MessageFilter
 from inspection_gui.focus_monitor import FocusMonitor
-from inspection_msgs.msg import PixelStrip
+from inspection_msgs.msg import PixelStrip, FocusValue
 from inspection_srvs.srv import CaptureImage
 from inspection_srvs.srv import MoveToPose
-from std_msgs.msg import ColorRGBA
+from std_msgs.msg import Float64, ColorRGBA
 
 
 class RosThread(Node):
@@ -34,7 +34,7 @@ class RosThread(Node):
 
     # initialization method
     def __init__(self, stream_id=0):
-        super().__init__('scanner_node')
+        super().__init__('gui_node')
 
         self.log = []
 
@@ -64,7 +64,7 @@ class RosThread(Node):
 
         # Main Camera
         self.focus_monitor = FocusMonitor(0.5, 0.5, 100, 100)
-        self.focus_monitor.state = 'fft'
+        self.focus_monitor.state = 'sobel'
         self.gphoto2_image = np.zeros((576, 1024, 3), dtype=np.uint8)
         self.focus_metric_dict = {}
         self.focus_metric_dict['buffer_size'] = 1000
@@ -74,6 +74,15 @@ class RosThread(Node):
         self.focus_metric_dict['metrics']['sobel']['time'] = 1000*[0]
         self.focus_metric_dict['metrics']['sobel']['image'] = np.zeros(
             (200, 200))
+
+        image_topic = '/image_raw/compressed'
+        image_sub = self.create_subscription(
+            CompressedImage, image_topic, self.compressed_image_callback, 10)
+
+        self.focus_pub = self.create_publisher(
+            FocusValue, image_topic + '/focus_value', 10)
+
+        # Stereo Camera
 
         self.depth_intrinsic_sub = self.create_subscription(
             Image, "/camera/camera/depth/camera_info", self.depth_intrinsic_callback, 10)
@@ -88,9 +97,6 @@ class RosThread(Node):
                                                    Image, "/camera/camera/color/image_rect_raw")
         # gphoto2_image_sub = message_filters.Subscriber(self,
         #    Image, "/camera1/image_raw")
-        gphoto2_image_sub = self.create_subscription(
-            CompressedImage, "/image_raw/compressed", self.compressed_image_callback, 10)
-
         ts = Tf2MessageFilter(self, [depth_image_sub, rgb_image_sub], 'part_frame',
                               'camera_depth_optical_frame', queue_size=1000)
         ts.registerCallback(self.depth_image_callback)
@@ -98,6 +104,7 @@ class RosThread(Node):
         # Inference
 
         self.twist = TwistStamped()
+        self.twist.header.frame_id = 'tool0'
         inference_timer_period = 0.1
         # self.inference_timer = self.create_timer(
         # inference_timer_period, self.inference_timer_callback)
@@ -137,15 +144,15 @@ class RosThread(Node):
 
         # Send moveit servo command
 
-        self.m = 10
-        self.k_p = 0.01
+        self.m = 5
+        self.k_p = 0.02
         self.c_p = 25.0
         self.k_o = 0.1
         self.c_o = 0.1
 
         self.pan_pos = (0., 0., 0.)
         self.pan_vel = (0., 0., 0.)
-        self.pan_vel_max = (0.1, 0.1, 0.1)
+        self.pan_vel_max = (1, 1, 1)
         self.pan_goal = (0., 0., 0.)
 
         self.orbit_pos = (0., 0., 0.)
@@ -591,6 +598,9 @@ class RosThread(Node):
         focus_value, focus_image = self.focus_monitor.measure_focus(
             self.gphoto2_image)
 
+        # Publish focus value
+        self.focus_pub.publish(FocusValue(header=msg.header, data=focus_value))
+
         # self.focus_metric_dict['sobel']['buffer'].append(metrics.)
 
         if len(self.focus_metric_dict['metrics']['sobel']['value']) > self.focus_metric_dict['buffer_size']:
@@ -600,8 +610,8 @@ class RosThread(Node):
         self.focus_metric_dict['metrics']['sobel']['value'].append(focus_value)
         self.focus_metric_dict['metrics']['sobel']['image'] = focus_image
 
-        cv2.rectangle(self.gphoto2_image, (x0, y0), (x1, y1),
-                      color=(204, 108, 231), thickness=2)
+        # cv2.rectangle(self.gphoto2_image, (x0, y0), (x1, y1),
+        #   color=(204, 108, 231), thickness=2)
         #   color=(255, 255, 255), thickness=2)
 
     def get_data(self):

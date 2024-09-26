@@ -6,7 +6,7 @@ def generate_launch_description():
     ld = LaunchDescription()
     gui_node = Node(
         package="inspection_gui",
-        executable="gui_node",
+        executable="gui",
         parameters=[
             {"config_file": "/home/col/Inspection/Parts/config/default.yaml"}
         ],
