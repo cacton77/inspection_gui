@@ -25,6 +25,7 @@ from inspection_msgs.msg import PixelStrip, FocusValue
 from inspection_srvs.srv import CaptureImage
 from inspection_srvs.srv import MoveToPose
 from std_msgs.msg import Float64, ColorRGBA
+from std_srvs.srv import Trigger
 
 
 class RosThread(Node):
@@ -63,15 +64,14 @@ class RosThread(Node):
         self.illuminance_image = np.zeros((480, 640, 1), dtype=np.uint8)
 
         # Main Camera
-        self.focus_monitor = FocusMonitor(0.5, 0.5, 100, 100)
-        self.focus_monitor.state = 'sobel'
+        self.focus_monitor = FocusMonitor(0.5, 0.5, 300, 300, 'squared_sobel')
         self.gphoto2_image = np.zeros((576, 1024, 3), dtype=np.uint8)
         self.focus_metric_dict = {}
         self.focus_metric_dict['buffer_size'] = 1000
         self.focus_metric_dict['metrics'] = {}
         self.focus_metric_dict['metrics']['sobel'] = {}
-        self.focus_metric_dict['metrics']['sobel']['value'] = 1000*[0]
-        self.focus_metric_dict['metrics']['sobel']['time'] = 1000*[0]
+        self.focus_metric_dict['metrics']['sobel']['value'] = []
+        self.focus_metric_dict['metrics']['sobel']['time'] = []
         self.focus_metric_dict['metrics']['sobel']['image'] = np.zeros(
             (200, 200))
 
@@ -114,6 +114,7 @@ class RosThread(Node):
         self.capture_image_future = None
         self.pixel_strip_msg = PixelStrip()
         self.pixel_count = 148
+        self.wb = [1.0, 1.0, 0.8]
         self.pixel_strip_msg.pixel_colors = self.pixel_count * \
             [ColorRGBA(r=0.0, g=0.0, b=0.0)]
         pixel_pub_timer_period = 0.2
@@ -162,14 +163,29 @@ class RosThread(Node):
 
         self.zoom_pos = 0.0
         self.zoom_vel = 0.0
-        self.zoom_vel_max = 0.1
+        self.zoom_vel_max = 1.0
         self.zoom_goal = 0.0
+
+        # Call /servo_node/start_servo service
+        self.get_logger().info('Connecting to servo node...')
+        self.start_servo_cli = self.create_client(
+            Trigger, '/servo_node/start_servo')
+        if not self.start_servo_cli.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('start servo service not available, waiting again...')
+        else:
+            req = Trigger.Request()
+            self.get_logger().info('Connected to servo node!')
+            self.get_logger().info('Sending start servo request...')
+            future = self.start_servo_cli.call_async(req)
+            rclpy.spin_until_future_complete(self, future)
+            resp = future.result()
+            self.get_logger().info('Servo node started!')
 
         self.twist_pub = self.create_publisher(
             TwistStamped, '/servo_node/delta_twist_cmds', 10)
         self.twist_pub_timer_period = 0.1
-        self.twist_pub_timer = self.create_timer(
-            self.twist_pub_timer_period, self.twist_pub_timer_callback)
+        # self.twist_pub_timer = self.create_timer(
+        # self.twist_pub_timer_period, self.twist_pub_timer_callback)
 
         light_ring = o3d.geometry.TriangleMesh.create_cylinder(
             radius=0.1, height=0.01)
@@ -265,9 +281,9 @@ class RosThread(Node):
                                        ]['value'] = resp.values[i].string_array_value
 
         # Set Parameters Client
-        self.camera_node_set_parameters_cli = self.create_client(
+        self.set_camera_params_cli = self.create_client(
             SetParameters, 'camera1/set_parameters')
-        if not self.camera_node_set_parameters_cli.wait_for_service(timeout_sec=1.0):
+        if not self.set_camera_params_cli.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('set parameters service not available, waiting again...')
 
         # Get all frames in tf tree
@@ -333,9 +349,9 @@ class RosThread(Node):
         pixel_colors = []
         for i in range(len(rgb_list)):
             color = ColorRGBA()
-            color.r = float(rgb_list[i][0])
-            color.g = float(rgb_list[i][1])
-            color.b = float(rgb_list[i][2])
+            color.r = self.wb[0]*float(rgb_list[i][0])
+            color.g = self.wb[1]*float(rgb_list[i][1])
+            color.b = self.wb[2]*float(rgb_list[i][2])
             pixel_colors.append(color)
         self.pixel_strip_msg.pixel_colors = pixel_colors
 
@@ -373,6 +389,41 @@ class RosThread(Node):
         t.transform.rotation.w = q[0]
         self.staticTfBroadcaster.sendTransform(t)
 
+    def set_camera_param(self, name, value):
+        self.camera_params[name]['value'] = value
+
+        req = SetParameters.Request()
+
+        type = self.camera_params[name]['type']
+        parameter = Parameter()
+        parameter.name = name
+
+        if type == rclpy.Parameter.Type.BOOL:
+            parameter.value.bool_value = self.camera_params[name]['value']
+        elif type == rclpy.Parameter.Type.BOOL_ARRAY:
+            parameter.value.bool_array_value = self.camera_params[name]['value']
+        elif type == rclpy.Parameter.Type.BYTE_ARRAY:
+            parameter.value.byte_array_value = self.camera_params[name]['value']
+        elif type == rclpy.Parameter.Type.DOUBLE:
+            parameter.value.double_value = self.camera_params[name]['value']
+        elif type == rclpy.Parameter.Type.DOUBLE_ARRAY:
+            parameter.value.double_array_value = self.camera_params[name]['value']
+        elif type == rclpy.Parameter.Type.INTEGER:
+            parameter.value.integer_value = self.camera_params[name]['value']
+        elif type == rclpy.Parameter.Type.INTEGER_ARRAY:
+            parameter.value.integer_array_value = self.camera_params[name]['value']
+        elif type == rclpy.Parameter.Type.STRING:
+            parameter.value.string_value = self.camera_params[name]['value']
+        elif type == rclpy.Parameter.Type.STRING_ARRAY:
+            parameter.value.string_array_value = self.camera_params[name]['value']
+
+        req.parameters = [parameter]
+
+        self.get_logger().info(
+            f'Sending set parameters request for {name} to {value}...')
+        future = self.set_camera_params_cli.call_async(req)
+        future.add_done_callback(self.set_camera_params_callback)
+
     def set_camera_params(self):
 
         req = SetParameters.Request()
@@ -407,10 +458,16 @@ class RosThread(Node):
             req.parameters.append(parameter)
 
         self.get_logger().info('Sending set parameters request...')
-        future = self.camera_node_set_parameters_cli.call_async(req)
-        rclpy.spin_until_future_complete(self, future)
-        resp = future.result()
-        self.get_logger().info('Parameters set!')
+        future = self.set_camera_params_cli.call_async(req)
+        future.add_done_callback(self.set_camera_params_callback)
+
+    def set_camera_params_callback(self, future):
+        try:
+            resp = future.result()
+            self.get_logger().info('Parameters set!')
+        except Exception as e:
+            self.get_logger().info(
+                'Service call failed %r' % (e,))
 
     def inference_timer_callback(self):
         original_size = self.rgb_image.shape
@@ -486,9 +543,9 @@ class RosThread(Node):
         self.zoom_vel = vz1
         self.zoom_goal = pz1
 
-        self.twist.twist.linear.x = vx1
-        self.twist.twist.linear.y = vy1
-        self.twist.twist.linear.z = vz1
+        self.twist.twist.linear.x = -vx1
+        self.twist.twist.linear.y = vz1
+        self.twist.twist.linear.z = vy1
 
         self.twist.header.stamp = self.get_clock().now().to_msg()
         self.twist_pub.publish(self.twist)
@@ -580,6 +637,9 @@ class RosThread(Node):
                       color=(204, 108, 231), thickness=2)
         #   color=(255, 255, 255), thickness=2)
 
+    def set_focus_metric(self, name):
+        self.focus_monitor.set_metric(name)
+
     def compressed_image_callback(self, msg):
         self.gphoto2_image = self.bridge.compressed_imgmsg_to_cv2(
             msg, desired_encoding="rgb8").astype(np.uint8)
@@ -599,7 +659,8 @@ class RosThread(Node):
             self.gphoto2_image)
 
         # Publish focus value
-        self.focus_pub.publish(FocusValue(header=msg.header, data=focus_value))
+        self.focus_pub.publish(FocusValue(
+            header=msg.header, metric=self.focus_monitor.metric, data=focus_value))
 
         # self.focus_metric_dict['sobel']['buffer'].append(metrics.)
 

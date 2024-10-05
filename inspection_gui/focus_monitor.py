@@ -4,32 +4,39 @@ import numpy as np
 
 class FocusMonitor:
 
-    MONITOR = 0
-    RECORD = 1
-
-    def __init__(self, cx, cy, w, h):
+    def __init__(self, cx, cy, w, h, metric='sobel'):
         self.cx = cx
         self.cy = cy
         self.w = w
         self.h = h
 
-        self.state = self.MONITOR
+        self.metric = metric
 
         self.dict = {}
 
     def get_metrics():
         return ['Variance of Sobel', 'Squared Gradient', 'FSWM', 'FFT']
 
+    def set_metric(self, name):
+        if name == 'Variance of Sobel':
+            self.metric = 'sobel'
+        elif name == 'Squared Gradient':
+            self.metric = 'squared_gradient'
+        elif name == 'FSWM':
+            self.metric = 'fswm'
+        elif name == 'FFT':
+            self.metric = 'fft'
+
     def measure_focus(self, image_in):
-        if self.state == 'sobel':
+        if self.metric == 'sobel':
             focus_value, focus_image = self.sobel(image_in)
-        elif self.state == 'squared_gradient':
+        elif self.metric == 'squared_gradient':
             focus_value, focus_image = self.squared_gradient(image_in)
-        elif self.state == 'squared_sobel':
+        elif self.metric == 'squared_sobel':
             focus_value, focus_image = self.squared_sobel(image_in)
-        elif self.state == 'fswm':
+        elif self.metric == 'fswm':
             focus_value, focus_image = self.fswm(image_in)
-        elif self.state == 'fft':
+        elif self.metric == 'fft':
             focus_value, focus_image = self.fft(image_in)
         return focus_value, focus_image
 

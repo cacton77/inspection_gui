@@ -2,6 +2,7 @@
 
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from io import BytesIO
+import time
 import cv2  # OpenCV library
 import numpy as np
 import threading
@@ -33,11 +34,15 @@ class PlottingThread():
         self.focus_metric_time = np.arange(0, 100, 1)
         self.focus_metric_data = np.zeros((100, 1))
         self.focus_metric_data_figure = plt.figure()
+        self.focus_metric_data_figure.set_tight_layout(True)
         self.focus_metric_plot_cv2 = np.zeros((100, 100, 3))
 
         self.focus_metric_image = np.zeros((100, 100))
         self.focus_metric_image_figure = plt.figure()
+        self.focus_metric_image_figure.set_tight_layout(True)
         self.focus_metric_image_cv2 = np.zeros((100, 100, 3))
+
+        self.t0 = time.time()
 
     def start(self):
         self.stopped = False
@@ -61,6 +66,13 @@ class PlottingThread():
 
     def get_focus_metric_image(self):
         return self.focus_metric_image_cv2.astype(np.uint8)
+
+    def start_measure(self):
+        self.t0 = time.time()
+
+    def stop_measure(self):
+        t1 = time.time()
+        print(f'Plotting Thread: {t1-self.t0:.2f} seconds')
 
     def update_plots(self):
         while not self.stopped:
@@ -97,17 +109,24 @@ class PlottingThread():
                 # divider = make_axes_locatable(ax)
                 # cax = divider.append_axes("right", size="5%", pad=0.05)
                 # ax.axis('off')
-                buf = BytesIO()
                 # plt.savefig(buf, format='png', bbox_inches='tight')
-                self.focus_metric_data_figure.savefig(
-                    buf, format='png', bbox_inches='tight')
+
+                # self.focus_metric_data_figure.savefig(
+                # buf, format='png', bbox_inches='tight')
+                self.focus_metric_data_figure.canvas.draw()
+                buf = self.focus_metric_data_figure.canvas.tostring_rgb()
+                ncols, nrows = self.focus_metric_data_figure.canvas.get_width_height()
+                plot_image = np.frombuffer(
+                    buf, dtype=np.uint8).reshape(nrows, ncols, 3)
+
                 self.focus_metric_data_figure.clf()
-                buf.seek(0)
-                plot_image = np.frombuffer(buf.getvalue(), dtype=np.uint8)
-                plot_data_cv2 = cv2.imdecode(
-                    plot_image, cv2.IMREAD_UNCHANGED)
-                self.focus_metric_plot_cv2 = cv2.cvtColor(
-                    plot_data_cv2, cv2.COLOR_BGR2RGB)
+                # buf.seek(0)
+                # plot_image = np.frombuffer(buf.getvalue(), dtype=np.uint8)
+                # plot_data_cv2 = cv2.imdecode(
+                # plot_image, cv2.IMREAD_UNCHANGED)
+                # self.focus_metric_plot_cv2 = cv2.cvtColor(
+                # plot_image, cv2.COLOR_BGR2RGB)
+                self.focus_metric_plot_cv2 = plot_image
 
                 # FOCUS # IMAGE
                 ax = self.focus_metric_image_figure.add_subplot()
@@ -117,18 +136,21 @@ class PlottingThread():
                 # cax = divider.append_axes("right", size="5%", pad=0.05)
                 # cbar = plt.colorbar(pos, cax=cax)
                 ax.axis('off')
-                buf = BytesIO()
-                self.focus_metric_image_figure.savefig(
-                    buf, format='png', bbox_inches='tight')
-                buf.seek(0)
-                plot_image = np.frombuffer(buf.getvalue(), dtype=np.uint8)
-                self.focus_metric_image_figure.clf()
-                plot_focus_image_cv2 = cv2.imdecode(
-                    plot_image, cv2.IMREAD_UNCHANGED)
-                self.focus_metric_image_cv2 = cv2.cvtColor(
-                    plot_focus_image_cv2, cv2.COLOR_BGR2RGB)
 
-                self.plot_focus_flag = False
+                self.focus_metric_image_figure.canvas.draw()
+                buf = self.focus_metric_image_figure.canvas.tostring_rgb()
+                ncols, nrows = self.focus_metric_image_figure.canvas.get_width_height()
+                plot_image = np.frombuffer(
+                    buf, dtype=np.uint8).reshape(nrows, ncols, 3)
+                self.focus_metric_image_figure.clf()
+
+                # plot_focus_image_cv2 = cv2.imdecode(
+                # plot_image, cv2.IMREAD_UNCHANGED)
+                # self.focus_metric_image_cv2 = cv2.cvtColor(
+                # plot_focus_image_cv2, cv2.COLOR_BGR2RGB)
+                self.focus_metric_image_cv2 = plot_image
+
+                self.plot_focus_flag = True
 
     def stop(self):
         self.stopped = True

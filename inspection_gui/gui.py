@@ -326,288 +326,6 @@ class MyGui():
         self.stereo_camera_panel.background_color = self.panel_color
         self.stereo_camera_panel.set_is_open(False)
 
-        grid = gui.VGrid(1, 0.25 * em)
-
-        # Add image widget to webcam panel
-        rgb_grid = gui.VGrid(1, 0.25 * em)
-        depth_grid = gui.VGrid(1, 0.25 * em)
-        illuminance_grid = gui.VGrid(1, 0.25 * em)
-
-        self.illuminance_image = gui.ImageWidget()
-
-        # RGB TAB #################################
-
-        self.rgb_image = gui.ImageWidget()
-        self.rgb_image.set_on_mouse(self._monitor_mouse_event)
-        rgb_grid.add_child(self.rgb_image)
-
-        # DEPTH TAB ###############################
-
-        self.depth_image = gui.ImageWidget()
-
-        def on_depth_trunc_changed(value):
-            self.depth_trunc = value
-            self.reconstruct_thread.depth_trunc = self.depth_trunc
-            self.ros_thread.depth_trunc = self.depth_trunc
-
-        depth_trunc_edit = gui.Slider(gui.Slider.DOUBLE)
-        depth_trunc_edit.set_limits(0.01, 1)
-        depth_trunc_edit.double_value = self.depth_trunc
-        depth_trunc_edit.background_color = gui.Color(0, 0, 0, 0.8)
-        depth_trunc_edit.set_on_value_changed(on_depth_trunc_changed)
-
-        depth_grid.add_child(self.depth_image)
-        depth_grid.add_child(depth_trunc_edit)
-
-        # ILLUMINANCE TAB #########################
-
-        self.illuminance_image = gui.ImageWidget()
-        illuminance_grid.add_child(self.illuminance_image)
-
-        self.stereo_camera_tabs = gui.TabControl()
-        # tabs.add_tab("RGB", rgb_grid)
-        self.stereo_camera_tabs.add_tab("RGB", self.rgb_image)
-        self.stereo_camera_tabs.add_tab("Depth", depth_grid)
-        self.stereo_camera_tabs.add_tab("Illuminance", illuminance_grid)
-        self.stereo_camera_tabs.add_child(gui.TabControl())
-
-        self.stereo_camera_panel.add_child(self.stereo_camera_tabs)
-
-        # MAIN CAMERA PANEL #########################################################
-
-        self.main_camera_panel = gui.CollapsableVert("Main Camera", 0, gui.Margins(
-            0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
-        self.main_camera_panel.background_color = self.panel_color
-        self.main_camera_panel.set_is_open(False)
-
-        self.fov_width_px = self.config_dict['camera']['fov']['width_px']
-        self.fov_height_px = self.config_dict['camera']['fov']['height_px']
-        self.fov_width_mm = self.config_dict['camera']['fov']['width_mm']
-        self.fov_height_mm = self.config_dict['camera']['fov']['height_mm']
-        self.roi_width = self.config_dict['camera']['roi']['width_px']
-        self.roi_height = self.config_dict['camera']['roi']['height_px']
-        self.dof = self.config_dict['camera']['dof_mm']
-        self.focal_distance_mm = self.config_dict['camera']['focal_distance_mm']
-
-        # PARTITIONER SETTINGS
-        self.viewpoint_dict = None
-        self.partitioner = Partitioner()
-
-        self.partitioner.fov_height = self.fov_height_mm * \
-            (self.roi_height/self.fov_height_px) / 10
-
-        self.partitioner.fov_width = self.fov_width_mm * \
-            (self.roi_width/self.fov_width_px) / 10
-
-        self.partitioner.focal_distance = self.focal_distance_mm / 10
-
-        svert = gui.ScrollableVert(0.25 * em)
-        svert.background_color = self.panel_color
-
-        def _on_fov_width_mm_edit(value):
-            self.fov_width_mm = value
-            self.partitioner.fov_width = self.fov_width_mm * \
-                (self.roi_width/self.fov_width_px)
-
-        def _on_fov_height_mm_edit(value):
-            self.fov_height_mm = value
-            self.partitioner.fov_height = self.fov_height_mm * \
-                (self.roi_height/self.fov_height_px)
-
-        def _on_fov_width_px_edit(value):
-            self.fov_width_px = value
-            self.partitioner.fov_width = self.fov_width_mm * \
-                (self.roi_width/self.fov_width_px)
-
-        def _on_fov_height_px_edit(value):
-            self.fov_height_px = value
-            self.partitioner.fov_height = self.fov_height_mm * \
-                (self.roi_height/self.fov_height_px)
-
-        def _on_roi_width_px_edit(value):
-            self.roi_width = value
-            self.partitioner.fov_width = self.fov_width_mm * \
-                (self.roi_width/self.fov_width_px)
-
-        def _on_roi_height_edit(value):
-            self.roi_height = value
-            self.partitioner.fov_height = self.fov_height_mm * \
-                (self.roi_height/self.fov_height_px)
-
-        def _on_dof_edit(value):
-            self.config_dict['camera']['dof'] = value
-            self.dof = value
-            self.partitioner.dof = value
-
-        def _on_focal_distance_edit(value):
-            self.config_dict['camera']['focal_distance_mm'] = value
-            self.focal_distance_mm = value
-            self.partitioner.focal_distance = value / 10
-
-        fov_px_grid = gui.VGrid(2, 0.25 * em)
-        fov_px_grid.add_child(gui.Label("width (px): "))
-        self.fov_width_px_edit = gui.NumberEdit(gui.NumberEdit.Type.INT)
-        self.fov_width_px_edit.set_on_value_changed(_on_fov_width_px_edit)
-        self.fov_width_px_edit.int_value = self.fov_width_px
-        self.fov_width_px_edit.enabled = False
-        fov_px_grid.add_child(self.fov_width_px_edit)
-        fov_px_grid.add_child(gui.Label("height (px): "))
-        self.fov_height_px_edit = gui.NumberEdit(gui.NumberEdit.Type.INT)
-        self.fov_height_px_edit.set_on_value_changed(_on_fov_height_px_edit)
-        self.fov_height_px_edit.int_value = self.fov_height_px
-        self.fov_height_px_edit.enabled = False
-        fov_px_grid.add_child(self.fov_height_px_edit)
-
-        fov_mm_grid = gui.VGrid(2, 0.25 * em)
-        fov_mm_grid.add_child(gui.Label("width (mm): "))
-        self.fov_width_mm_edit = gui.NumberEdit(gui.NumberEdit.Type.DOUBLE)
-        self.fov_width_mm_edit.set_on_value_changed(_on_fov_width_mm_edit)
-        self.fov_width_mm_edit.double_value = self.fov_width_mm
-        fov_mm_grid.add_child(self.fov_width_mm_edit)
-        fov_mm_grid.add_child(gui.Label("height (mm): "))
-        self.fov_height_mm_edit = gui.NumberEdit(gui.NumberEdit.Type.DOUBLE)
-        self.fov_height_mm_edit.set_on_value_changed(_on_fov_height_mm_edit)
-        self.fov_height_mm_edit.double_value = self.fov_height_mm
-        fov_mm_grid.add_child(self.fov_height_mm_edit)
-
-        roi_grid = gui.VGrid(2, 0.25 * em)
-        roi_grid.add_child(gui.Label("width (px): "))
-        self.roi_width_edit = gui.NumberEdit(gui.NumberEdit.Type.INT)
-        self.roi_width_edit.set_on_value_changed(_on_roi_width_px_edit)
-        self.roi_width_edit.int_value = self.roi_width
-        roi_grid.add_child(self.roi_width_edit)
-        roi_grid.add_child(gui.Label("height (px): "))
-        self.roi_height_edit = gui.NumberEdit(gui.NumberEdit.Type.INT)
-        self.roi_height_edit.set_on_value_changed(_on_roi_height_edit)
-        self.roi_height_edit.int_value = self.roi_height
-        roi_grid.add_child(self.roi_height_edit)
-
-        self.dof_edit = gui.NumberEdit(gui.NumberEdit.Type.DOUBLE)
-        self.dof_edit.double_value = self.dof
-        self.dof_edit.set_on_value_changed(_on_dof_edit)
-        self.focal_distance_edit = gui.NumberEdit(gui.NumberEdit.Type.DOUBLE)
-        self.focal_distance_edit.double_value = self.focal_distance_mm
-        self.focal_distance_edit.set_on_value_changed(_on_focal_distance_edit)
-
-        dof_focal_distance_grid = gui.VGrid(2, 0.25 * em)
-        dof_focal_distance_grid.add_child(gui.Label("Depth of focus (mm): "))
-        dof_focal_distance_grid.add_child(self.dof_edit)
-        dof_focal_distance_grid.add_child(gui.Label("Focal distance (mm): "))
-        dof_focal_distance_grid.add_child(self.focal_distance_edit)
-
-        svert.add_child(gui.Label('FOV:'))
-        svert.add_child(fov_px_grid)
-        svert.add_child(fov_mm_grid)
-        svert.add_child(gui.Label('ROI:'))
-        svert.add_child(roi_grid)
-        svert.add_child(gui.Label('Focal Depth:'))
-        svert.add_child(dof_focal_distance_grid)
-
-        # Camera settings
-
-        camera_params = self.ros_thread.read_camera_params()
-
-        def on_camera_param_changed(value):
-            self.ros_thread.set_camera_params()
-
-        def _on_aperture_changed(value, i):
-            self.ros_thread.camera_params['aperture']['value'] = value
-            self.ros_thread.set_camera_params()
-
-        def _on_shutterspeed_changed(value, i):
-            self.ros_thread.camera_params['shutterspeed']['value'] = value
-            self.ros_thread.set_camera_params()
-
-        def _on_iso_changed(value, i):
-            self.ros_thread.camera_params['iso']['value'] = value
-            self.ros_thread.set_camera_params()
-
-        # Order the camera parameters
-
-        param_names_ordered = camera_params.keys()
-
-        grid = gui.VGrid(2, 0.25 * em)
-
-        # Loop through camera_params and add widgets to grid
-        for name in param_names_ordered:
-
-            # Check if parameter is ISO, Shutterspeed, or Aperture
-            # If parameter name contains 'iso'
-            if 'iso' in name:
-                self.iso_select = gui.Combobox()
-                description = camera_params[name]
-                for choice in description['choices']:
-                    self.iso_select.add_item(choice)
-                self.iso_select.set_on_selection_changed(
-                    _on_iso_changed)
-                grid.add_child(gui.Label("ISO: "))
-                grid.add_child(self.iso_select)
-            elif 'shutterspeed' in name:
-                self.shutterspeed_select = gui.Combobox()
-                description = camera_params[name]
-                for choice in description['choices']:
-                    self.shutterspeed_select.add_item(choice)
-                self.shutterspeed_select.set_on_selection_changed(
-                    _on_shutterspeed_changed)
-                grid.add_child(gui.Label("Shutterspeed: "))
-                grid.add_child(self.shutterspeed_select)
-            elif 'aperture' in name:
-                self.aperture_select = gui.Combobox()
-                description = camera_params[name]
-                for choice in description['choices']:
-                    self.aperture_select.add_item(choice)
-                self.aperture_select.set_on_selection_changed(
-                    _on_aperture_changed)
-                grid.add_child(gui.Label("Aperture: "))
-                grid.add_child(self.aperture_select)
-            else:
-                continue
-
-            # Truncate name to 20 characters
-            if len(name) > 20:
-                display_name = name[:20] + '...'
-            else:
-                display_name = name
-            description = camera_params[name]
-            # grid = gui.Horiz(0, gui.Margins(
-            # 0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
-            grid.add_child(gui.Label(f'{display_name}: '))
-
-            if description['type'] == 2:
-                edit = gui.NumberEdit(gui.NumberEdit.INT)
-                edit.int_value = int(description['value'])
-
-            elif description['type'] == 3:
-                edit = gui.TextEdit()
-                # edit.double_value = float(description['value'])
-
-            elif description['type'] == 1:
-                edit = gui.Checkbox(name)
-                # edit.checked = description['value']
-
-            elif description['type'] == 4:
-                if len(description['choices']) > 1:
-                    edit = gui.Combobox()
-                    for choice in description['choices']:
-                        edit.add_item(choice)
-                else:
-                    edit = gui.TextEdit()
-                    edit.text_value = description['value']
-            else:
-                grid.add_child(gui.Label("Unknown type"))
-                grid.add_child(gui.Label("Unknown type"))
-
-            if description['read_only']:
-                edit.enabled = False
-
-            grid.add_child(edit)
-            # self.main_camera_panel.add_child(grid)
-
-        svert.add_child(gui.Label('Camera Settings:'))
-        svert.add_child(grid)
-
-        self.main_camera_panel.add_child(svert)
-
         # LIGHTS PANEL ###############################################################
 
         self.light_panel = gui.CollapsableVert("Light Control", 0, gui.Margins(
@@ -1021,19 +739,255 @@ class MyGui():
 
         # RIGHT PANEL ###############################################################
 
+        self.right_panel = gui.CollapsableVert("", 0, gui.Margins(
+            0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+        self.right_panel.background_color = gui.Color(0, 0, 0, 0.8)
+
+        # Tabs
         self.right_panel_tabs = gui.TabControl()
+
+        # MAIN CAMERA PANEL ########################
+
+        # MAIN CAMERA PANEL #########################################################
+
+        self.fov_width_px = self.config_dict['camera']['fov']['width_px']
+        self.fov_height_px = self.config_dict['camera']['fov']['height_px']
+        self.fov_width_mm = self.config_dict['camera']['fov']['width_mm']
+        self.fov_height_mm = self.config_dict['camera']['fov']['height_mm']
+        self.roi_width = self.config_dict['camera']['roi']['width_px']
+        self.roi_height = self.config_dict['camera']['roi']['height_px']
+        self.dof = self.config_dict['camera']['dof_mm']
+        self.focal_distance_mm = self.config_dict['camera']['focal_distance_mm']
+
+        # PARTITIONER SETTINGS
+        self.viewpoint_dict = None
+        self.partitioner = Partitioner()
+
+        self.partitioner.fov_height = self.fov_height_mm * \
+            (self.roi_height/self.fov_height_px) / 10
+
+        self.partitioner.fov_width = self.fov_width_mm * \
+            (self.roi_width/self.fov_width_px) / 10
+
+        self.partitioner.focal_distance = self.focal_distance_mm / 10
+
+        svert = gui.ScrollableVert(0.25 * em)
+        svert.background_color = self.panel_color
+
+        def _on_fov_width_mm_edit(value):
+            self.fov_width_mm = value
+            self.partitioner.fov_width = self.fov_width_mm * \
+                (self.roi_width/self.fov_width_px)
+
+        def _on_fov_height_mm_edit(value):
+            self.fov_height_mm = value
+            self.partitioner.fov_height = self.fov_height_mm * \
+                (self.roi_height/self.fov_height_px)
+
+        def _on_fov_width_px_edit(value):
+            self.fov_width_px = value
+            self.partitioner.fov_width = self.fov_width_mm * \
+                (self.roi_width/self.fov_width_px)
+
+        def _on_fov_height_px_edit(value):
+            self.fov_height_px = value
+            self.partitioner.fov_height = self.fov_height_mm * \
+                (self.roi_height/self.fov_height_px)
+
+        def _on_roi_width_px_edit(value):
+            self.roi_width = value
+            self.partitioner.fov_width = self.fov_width_mm * \
+                (self.roi_width/self.fov_width_px)
+
+        def _on_roi_height_edit(value):
+            self.roi_height = value
+            self.partitioner.fov_height = self.fov_height_mm * \
+                (self.roi_height/self.fov_height_px)
+
+        def _on_dof_edit(value):
+            self.config_dict['camera']['dof'] = value
+            self.dof = value
+            self.partitioner.dof = value
+
+        def _on_focal_distance_edit(value):
+            self.config_dict['camera']['focal_distance_mm'] = value
+            self.focal_distance_mm = value
+            self.partitioner.focal_distance = value / 10
+
+        fov_px_grid = gui.VGrid(2, 0.25 * em)
+        fov_px_grid.add_child(gui.Label("width (px): "))
+        self.fov_width_px_edit = gui.NumberEdit(gui.NumberEdit.Type.INT)
+        self.fov_width_px_edit.set_on_value_changed(_on_fov_width_px_edit)
+        self.fov_width_px_edit.int_value = self.fov_width_px
+        self.fov_width_px_edit.enabled = False
+        fov_px_grid.add_child(self.fov_width_px_edit)
+        fov_px_grid.add_child(gui.Label("height (px): "))
+        self.fov_height_px_edit = gui.NumberEdit(gui.NumberEdit.Type.INT)
+        self.fov_height_px_edit.set_on_value_changed(_on_fov_height_px_edit)
+        self.fov_height_px_edit.int_value = self.fov_height_px
+        self.fov_height_px_edit.enabled = False
+        fov_px_grid.add_child(self.fov_height_px_edit)
+
+        fov_mm_grid = gui.VGrid(2, 0.25 * em)
+        fov_mm_grid.add_child(gui.Label("width (mm): "))
+        self.fov_width_mm_edit = gui.NumberEdit(gui.NumberEdit.Type.DOUBLE)
+        self.fov_width_mm_edit.set_on_value_changed(_on_fov_width_mm_edit)
+        self.fov_width_mm_edit.double_value = self.fov_width_mm
+        fov_mm_grid.add_child(self.fov_width_mm_edit)
+        fov_mm_grid.add_child(gui.Label("height (mm): "))
+        self.fov_height_mm_edit = gui.NumberEdit(gui.NumberEdit.Type.DOUBLE)
+        self.fov_height_mm_edit.set_on_value_changed(_on_fov_height_mm_edit)
+        self.fov_height_mm_edit.double_value = self.fov_height_mm
+        fov_mm_grid.add_child(self.fov_height_mm_edit)
+
+        roi_grid = gui.VGrid(2, 0.25 * em)
+        roi_grid.add_child(gui.Label("width (px): "))
+        self.roi_width_edit = gui.NumberEdit(gui.NumberEdit.Type.INT)
+        self.roi_width_edit.set_on_value_changed(_on_roi_width_px_edit)
+        self.roi_width_edit.int_value = self.roi_width
+        roi_grid.add_child(self.roi_width_edit)
+        roi_grid.add_child(gui.Label("height (px): "))
+        self.roi_height_edit = gui.NumberEdit(gui.NumberEdit.Type.INT)
+        self.roi_height_edit.set_on_value_changed(_on_roi_height_edit)
+        self.roi_height_edit.int_value = self.roi_height
+        roi_grid.add_child(self.roi_height_edit)
+
+        self.dof_edit = gui.NumberEdit(gui.NumberEdit.Type.DOUBLE)
+        self.dof_edit.double_value = self.dof
+        self.dof_edit.set_on_value_changed(_on_dof_edit)
+        self.focal_distance_edit = gui.NumberEdit(gui.NumberEdit.Type.DOUBLE)
+        self.focal_distance_edit.double_value = self.focal_distance_mm
+        self.focal_distance_edit.set_on_value_changed(_on_focal_distance_edit)
+
+        dof_focal_distance_grid = gui.VGrid(2, 0.25 * em)
+        dof_focal_distance_grid.add_child(gui.Label("Depth of focus (mm): "))
+        dof_focal_distance_grid.add_child(self.dof_edit)
+        dof_focal_distance_grid.add_child(gui.Label("Focal distance (mm): "))
+        dof_focal_distance_grid.add_child(self.focal_distance_edit)
+
+        svert.add_child(gui.Label('FOV:'))
+        svert.add_child(fov_px_grid)
+        svert.add_child(fov_mm_grid)
+        svert.add_child(gui.Label('ROI:'))
+        svert.add_child(roi_grid)
+        svert.add_child(gui.Label('Focal Depth:'))
+        svert.add_child(dof_focal_distance_grid)
+
+        # Camera settings
+
+        camera_params = self.ros_thread.read_camera_params()
+
+        def on_camera_param_changed(value):
+            self.ros_thread.set_camera_params()
+
+        def _on_aperture_changed(value, i):
+            self.ros_thread.set_camera_param(self.aperture_name, value)
+
+        def _on_shutterspeed_changed(value, i):
+            self.ros_thread.set_camera_param(self.shutterspeed_name, value)
+
+        def _on_iso_changed(value, i):
+            self.ros_thread.set_camera_param(self.iso_name, value)
+
+        # Order the camera parameters
+
+        param_names_ordered = camera_params.keys()
+
+        grid = gui.VGrid(2, 0.25 * em)
+
+        # Loop through camera_params and add widgets to grid
+        for name in param_names_ordered:
+
+            # Check if parameter is ISO, Shutterspeed, or Aperture
+            # If parameter name contains 'iso'
+            if 'iso' in name:
+                self.iso_select = gui.Combobox()
+                description = camera_params[name]
+                for choice in description['choices']:
+                    self.iso_select.add_item(choice)
+
+                self.iso_name = name
+                self.iso_select.set_on_selection_changed(
+                    _on_iso_changed)
+
+                grid.add_child(gui.Label("ISO: "))
+                grid.add_child(self.iso_select)
+
+            elif 'shutterspeed' in name:
+                self.shutterspeed_select = gui.Combobox()
+                description = camera_params[name]
+                for choice in description['choices']:
+                    self.shutterspeed_select.add_item(choice)
+
+                self.shutterspeed_name = name
+                self.shutterspeed_select.set_on_selection_changed(
+                    _on_shutterspeed_changed)
+
+                grid.add_child(gui.Label("Shutterspeed: "))
+                grid.add_child(self.shutterspeed_select)
+            elif 'aperture' in name or 'fstop' in name or 'f-stop' in name or 'f/stop' in name or 'f-number' in name or 'F-Number' in name:
+                self.aperture_select = gui.Combobox()
+                description = camera_params[name]
+                for choice in description['choices']:
+                    self.aperture_select.add_item(choice)
+
+                self.aperture_name = name
+                self.aperture_select.set_on_selection_changed(
+                    _on_aperture_changed)
+
+                grid.add_child(gui.Label("Aperture: "))
+                grid.add_child(self.aperture_select)
+            else:
+                continue
+
+            # Truncate name to 20 characters
+            if len(name) > 20:
+                display_name = name[:20] + '...'
+            else:
+                display_name = name
+            description = camera_params[name]
+            # grid = gui.Horiz(0, gui.Margins(
+            # 0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+            grid.add_child(gui.Label(f'{display_name}: '))
+
+            if description['type'] == 2:
+                edit = gui.NumberEdit(gui.NumberEdit.INT)
+                edit.int_value = int(description['value'])
+
+            elif description['type'] == 3:
+                edit = gui.TextEdit()
+                # edit.double_value = float(description['value'])
+
+            elif description['type'] == 1:
+                edit = gui.Checkbox(name)
+                # edit.checked = description['value']
+
+            elif description['type'] == 4:
+                if len(description['choices']) > 1:
+                    edit = gui.Combobox()
+                    for choice in description['choices']:
+                        edit.add_item(choice)
+                else:
+                    edit = gui.TextEdit()
+                    edit.text_value = description['value']
+            else:
+                grid.add_child(gui.Label("Unknown type"))
+                grid.add_child(gui.Label("Unknown type"))
+
+            if description['read_only']:
+                edit.enabled = False
+
+            grid.add_child(edit)
+            # self.main_camera_panel.add_child(grid)
+
+        svert.add_child(gui.Label('Camera Settings:'))
+        svert.add_child(grid)
+
+        self.right_panel_tabs.add_tab("Camera", svert)
 
         # METRIC PANEL ########################
 
-        self.focus_monitor_panel = FocusMonitorPanel(0.25, em)
-        self.metric_panel = gui.CollapsableVert("", 0, gui.Margins(
-            0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
-        # self.metric_panel.background_color = self.panel_color
-        self.focus_monitor_panel.set_background_color(gui.Color(0, 0, 0, 0.8))
-        self.metric_panel.background_color = gui.Color(0, 0, 0, 0.8)
-        # self.metric_panel.set_is_open(False)
-
-        focus_vert = gui.Vert(0, gui.Margins(
+        focus_vert = gui.ScrollableVert(0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
 
         grid = gui.VGrid(2, 0.25 * em)
@@ -1042,7 +996,11 @@ class MyGui():
         for metric in focus_metric_names:
             self.focus_metric_select.add_item(metric)
 
-        self.focus_monitor_panel.set_metric_options(focus_metric_names)
+        def on_focus_metric_changed(name, i):
+            self.ros_thread.set_focus_metric(name)
+
+        self.focus_metric_select.set_on_selection_changed(
+            on_focus_metric_changed)
 
         grid.add_child(gui.Label("Focus Metric: "))
         grid.add_child(self.focus_metric_select)
@@ -1058,7 +1016,58 @@ class MyGui():
         focus_vert.add_child(self.focus_metric_image)
 
         self.right_panel_tabs.add_tab("Focus", focus_vert)
-        self.metric_panel.add_child(self.right_panel_tabs)
+
+        # STEREO CAMERA TAB #########################################################
+
+        stereo_vert = gui.ScrollableVert(0, gui.Margins(
+            0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+
+        # Add image widget to webcam panel
+        rgb_grid = gui.VGrid(1, 0.25 * em)
+        depth_grid = gui.VGrid(1, 0.25 * em)
+        illuminance_grid = gui.VGrid(1, 0.25 * em)
+
+        self.illuminance_image = gui.ImageWidget()
+
+        # RGB TAB #################################
+
+        self.rgb_image = gui.ImageWidget()
+        self.rgb_image.set_on_mouse(self._monitor_mouse_event)
+        rgb_grid.add_child(self.rgb_image)
+
+        # DEPTH TAB ###############################
+
+        self.depth_image = gui.ImageWidget()
+
+        def on_depth_trunc_changed(value):
+            self.depth_trunc = value
+            self.reconstruct_thread.depth_trunc = self.depth_trunc
+            self.ros_thread.depth_trunc = self.depth_trunc
+
+        depth_trunc_edit = gui.Slider(gui.Slider.DOUBLE)
+        depth_trunc_edit.set_limits(0.01, 1)
+        depth_trunc_edit.double_value = self.depth_trunc
+        depth_trunc_edit.background_color = gui.Color(0, 0, 0, 0.8)
+        depth_trunc_edit.set_on_value_changed(on_depth_trunc_changed)
+
+        depth_grid.add_child(self.depth_image)
+        depth_grid.add_child(depth_trunc_edit)
+
+        # ILLUMINANCE TAB #########################
+
+        self.illuminance_image = gui.ImageWidget()
+        illuminance_grid.add_child(self.illuminance_image)
+
+        self.stereo_camera_tabs = gui.TabControl()
+        # tabs.add_tab("RGB", rgb_grid)
+        self.stereo_camera_tabs.add_tab("RGB", self.rgb_image)
+        self.stereo_camera_tabs.add_tab("Depth", depth_grid)
+        self.stereo_camera_tabs.add_tab("Illuminance", illuminance_grid)
+        self.stereo_camera_tabs.add_child(gui.TabControl())
+
+        stereo_vert.add_child(self.stereo_camera_tabs)
+        self.right_panel_tabs.add_tab("Stereo Camera", stereo_vert)
+        self.right_panel.add_child(self.right_panel_tabs)
 
         # ---- Menu ----
         # The menu is global (because the macOS menu is global), so only create
@@ -1225,11 +1234,9 @@ class MyGui():
         self.window.add_child(self.camera_frame_panel)
         self.window.add_child(self.footer_panel)
         self.window.add_child(self.log_panel)
-        self.window.add_child(self.main_camera_panel)
-        self.window.add_child(self.stereo_camera_panel)
         self.window.add_child(self.viewpoint_generation_panel)
         self.window.add_child(self.light_panel)
-        self.window.add_child(self.metric_panel)
+        self.window.add_child(self.right_panel)
         self.window.set_on_layout(self._on_layout)
 
         self.last_draw_time = time.time()
@@ -1666,10 +1673,8 @@ class MyGui():
 
         def on_panel_color_changed(c):
             self.panel_color = gui.Color(c.red, c.green, c.blue, c.alpha)
-            self.stereo_camera_panel.background_color = self.panel_color
             self.main_tabs.background_color = self.panel_color
             # self.log_panel.background_color = self.panel_color
-            self.main_camera_panel.background_color = self.panel_color
             self.footer_panel.background_color = self.panel_color
 
         panel_color_edit = gui.ColorEdit()
@@ -1833,9 +1838,9 @@ class MyGui():
         elif event.type == gui.MouseEvent.Type.WHEEL:
             # Zoom
             if event.wheel_dy > 0:
-                self.ros_thread.zoom(100)
+                self.ros_thread.zoom(500)
             else:
-                self.ros_thread.zoom(-100)
+                self.ros_thread.zoom(-500)
         return gui.Widget.EventCallbackResult.IGNORED
 
     def _on_menu_show_axes(self):
@@ -1874,7 +1879,7 @@ class MyGui():
         pass
 
     def set_panel_color(self, color):
-        self.stereo_camera_panel.background_color = color
+        pass
 
     def generate_point_cloud():
         new_pcd = o3d.geometry.PointCloud()
@@ -2200,8 +2205,8 @@ class MyGui():
             self.monitor_image_panel.enabled = False
             self.monitor_image_panel.visible = False
             self.monitor_image_widget.enabled = False
-            # self.metric_panel.enabled = False
-            # self.metric_panel.visible = False
+            # self.right_panel.enabled = False
+            # self.right_panel.visible = False
             self.main_tabs.selected_tab_index = MyGui.SCENE_TAB
 
             # 3D SCENE WIDGET ##########################################
@@ -2310,8 +2315,8 @@ class MyGui():
 
             # Show/hide and enable/disable UI elements
 
-            self.metric_panel.enabled = True
-            self.metric_panel.visible = True
+            self.right_panel.enabled = True
+            self.right_panel.visible = True
             # self.monitor_image_panel.enabled = True
             self.monitor_image_panel.visible = True
             # self.scene_widget.scene.show_ground_plane(
@@ -2387,7 +2392,7 @@ class MyGui():
 
         # METRIC PANEL ###########################################################
 
-        if self.metric_panel.get_is_open():
+        if self.right_panel.get_is_open():
 
             focus_metric_data = self.ros_thread.focus_metric_dict['metrics']['sobel']['value']
             focus_metric_time = self.ros_thread.focus_metric_dict['metrics']['sobel']['time']
@@ -2474,41 +2479,13 @@ class MyGui():
 
         self.scene_widget.frame = r
 
-        # Stereo Camera Panel
-
-        width = 25 * layout_context.theme.font_size
-        height = 0.75*self.stereo_camera_panel.calc_preferred_size(
-            layout_context, gui.Widget.Constraints()).height
-        if height < 10 * em:
-            width = 7.5 * em
-
-        self.stereo_camera_panel.frame = gui.Rect(
-            0, main_frame_top + 2*em, width, height)
-
-        # Main Camera Panel
-
-        top = self.stereo_camera_panel.frame.get_bottom() + 2*em
-
-        width = self.main_camera_panel.calc_preferred_size(
-            layout_context, gui.Widget.Constraints()).width
-        height = self.main_camera_panel.calc_preferred_size(
-            layout_context, gui.Widget.Constraints()).height
-        if height < 10 * em:
-            width = 7.5 * em
-        else:
-            height = 11 * em
-
-        self.main_camera_panel.frame = gui.Rect(
-            0, top, width, height)
-
         # Viewpoints Panel
-
-        top = self.main_camera_panel.frame.get_bottom() + 2*em
 
         width = self.viewpoint_generation_panel.calc_preferred_size(
             layout_context, gui.Widget.Constraints()).width
         height = self.viewpoint_generation_panel.calc_preferred_size(
             layout_context, gui.Widget.Constraints()).height
+        top = self.footer_panel.frame.get_top() - 2*em - height
         if height < 4 * em:
             width = 7.5 * em
 
@@ -2517,7 +2494,7 @@ class MyGui():
 
         # Light Control Panel
 
-        top = self.viewpoint_generation_panel.frame.get_bottom() + 2*em
+        top = self.main_tabs.frame.get_bottom() + 2*em
 
         width = self.light_panel.calc_preferred_size(
             layout_context, gui.Widget.Constraints()).width
@@ -2565,21 +2542,21 @@ class MyGui():
 
         # Metric Panel
 
-        # width = self.metric_panel.calc_preferred_size(
+        # width = self.right_panel.calc_preferred_size(
         # layout_context, gui.Widget.Constraints()).width
         # Set width to 1/5 the width of the window
         width = r.width/5
-        height = self.metric_panel.calc_preferred_size(
+        height = self.right_panel.calc_preferred_size(
             layout_context, gui.Widget.Constraints()).height
         height = self.footer_panel.frame.get_top() - main_frame_top
-        if not self.metric_panel.get_is_open():
+        if not self.right_panel.get_is_open():
             width = 3 * em
 
         top = main_frame_top + 2*em
         top = main_frame_top
         left = r.width - width
 
-        self.metric_panel.frame = gui.Rect(left, top, width, height)
+        self.right_panel.frame = gui.Rect(left, top, width, height)
 
         # Part Frame Panel
 
@@ -2591,7 +2568,7 @@ class MyGui():
             width = 7.5 * em
 
         top = main_frame_top + 2*em
-        left = self.metric_panel.frame.get_left() - width - em
+        left = self.right_panel.frame.get_left() - width - em
 
         self.part_frame_panel.frame = gui.Rect(left, top, width, height)
 
@@ -2605,7 +2582,7 @@ class MyGui():
             width = 7.5 * em
 
         top = self.part_frame_panel.frame.get_bottom() + 2*em
-        left = self.metric_panel.frame.get_left() - width - em
+        left = self.right_panel.frame.get_left() - width - em
 
         self.camera_frame_panel.frame = gui.Rect(left, top, width, height)
 
