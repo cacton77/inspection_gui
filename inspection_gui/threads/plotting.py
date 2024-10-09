@@ -32,7 +32,8 @@ class PlottingThread():
         self.focus_metric_cmap = 'Greys'
 
         self.focus_metric_time = np.arange(0, 100, 1)
-        self.focus_metric_data = np.zeros((100, 1))
+        self.filtered_focus_metric_data = np.zeros((100, 1))
+        self.raw_focus_metric_data = np.zeros((100, 1))
         self.focus_metric_data_figure = plt.figure()
         self.focus_metric_data_figure.set_tight_layout(True)
         self.focus_metric_plot_cv2 = np.zeros((100, 100, 3))
@@ -52,10 +53,11 @@ class PlottingThread():
         self.depth_image = depth_image
         self.plot_depth_image_flag = True
 
-    def update_focus_metric(self, focus_metric_time, focus_metric_data, focus_metric_image):
-        self.focus_metric_time = focus_metric_time
-        self.focus_metric_data = focus_metric_data
-        self.focus_metric_image = focus_metric_image
+    def update_focus_metric(self, time, filtered_data, raw_data, image):
+        self.focus_metric_time = time
+        self.filtered_focus_metric_data = filtered_data
+        self.raw_focus_metric_data = raw_data
+        self.focus_metric_image = image
         self.plot_focus_flag = True
 
     def get_depth_image(self):
@@ -104,7 +106,10 @@ class PlottingThread():
             if self.plot_focus_flag:
 
                 ax = self.focus_metric_data_figure.add_subplot()
-                pos = ax.plot(self.focus_metric_time, self.focus_metric_data)
+                ax.plot(self.focus_metric_time,
+                        self.raw_focus_metric_data)
+                ax.plot(self.focus_metric_time,
+                        self.filtered_focus_metric_data, color='green')
                 ax.spines[['top', 'right']].set_visible(False)
                 # divider = make_axes_locatable(ax)
                 # cax = divider.append_axes("right", size="5%", pad=0.05)

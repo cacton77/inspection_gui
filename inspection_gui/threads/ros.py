@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 
 import cv2  # OpenCV library
 import open3d as o3d
@@ -37,6 +39,8 @@ class RosThread(Node):
     def __init__(self, stream_id=0):
         super().__init__('gui_node')
 
+        self.start_measure()
+
         self.log = []
 
         self.bridge = CvBridge()
@@ -63,148 +67,42 @@ class RosThread(Node):
         self.depth_image = np.zeros((480, 640, 1), dtype=np.float32)
         self.illuminance_image = np.zeros((480, 640, 1), dtype=np.uint8)
 
-        # Main Camera
+        # MACRO CAMERA ####################################################################
+
+        macro_camera_cb_group = MutuallyExclusiveCallbackGroup()
+
         self.focus_monitor = FocusMonitor(0.5, 0.5, 300, 300, 'squared_sobel')
         self.gphoto2_image = np.zeros((576, 1024, 3), dtype=np.uint8)
         self.focus_metric_dict = {}
-        self.focus_metric_dict['buffer_size'] = 1000
+        self.focus_metric_dict['buffer_size'] = 100
         self.focus_metric_dict['metrics'] = {}
         self.focus_metric_dict['metrics']['sobel'] = {}
-        self.focus_metric_dict['metrics']['sobel']['value'] = []
+        self.focus_metric_dict['metrics']['sobel']['filtered_value'] = []
+        self.focus_metric_dict['metrics']['sobel']['raw_value'] = []
         self.focus_metric_dict['metrics']['sobel']['time'] = []
         self.focus_metric_dict['metrics']['sobel']['image'] = np.zeros(
             (200, 200))
 
         image_topic = '/image_raw/compressed'
         image_sub = self.create_subscription(
-            CompressedImage, image_topic, self.compressed_image_callback, 10)
+            CompressedImage, image_topic, self.compressed_image_callback, 10, callback_group=macro_camera_cb_group)
 
+        # FOCUS #########################################################################
+
+        self.filtered_focus_value = 0.0
+        self.focus_value_alpha = 0.5
         self.focus_pub = self.create_publisher(
             FocusValue, image_topic + '/focus_value', 10)
 
-        # Stereo Camera
+        # MACRO SETTINGS ######################################################################
 
-        self.depth_intrinsic_sub = self.create_subscription(
-            Image, "/camera/camera/depth/camera_info", self.depth_intrinsic_callback, 10)
-        # self.depth_image_sub = self.create_subscription(
-        # Image, "/camera/camera/depth/image_rect_raw", self.depth_image_callback, 10)
-
-        self.depth_trunc = 1.0
-
-        depth_image_sub = message_filters.Subscriber(self,
-                                                     Image, "/camera/camera/depth/image_rect_raw")
-        rgb_image_sub = message_filters.Subscriber(self,
-                                                   Image, "/camera/camera/color/image_rect_raw")
-        # gphoto2_image_sub = message_filters.Subscriber(self,
-        #    Image, "/camera1/image_raw")
-        ts = Tf2MessageFilter(self, [depth_image_sub, rgb_image_sub], 'part_frame',
-                              'camera_depth_optical_frame', queue_size=1000)
-        ts.registerCallback(self.depth_image_callback)
-
-        # Inference
-
-        self.twist = TwistStamped()
-        self.twist.header.frame_id = 'tool0'
-        inference_timer_period = 0.1
-        # self.inference_timer = self.create_timer(
-        # inference_timer_period, self.inference_timer_callback)
-
-        # LIGHTS #########################################################################
-
-        self.capture_image_future = None
-        self.pixel_strip_msg = PixelStrip()
-        self.pixel_count = 148
-        self.wb = [1.0, 1.0, 0.8]
-        self.pixel_strip_msg.pixel_colors = self.pixel_count * \
-            [ColorRGBA(r=0.0, g=0.0, b=0.0)]
-        pixel_pub_timer_period = 0.2
-        self.pixel_pub = self.create_publisher(PixelStrip, '/pixel_strip', 10)
-        self.pixel_pub_timer = self.create_timer(
-            pixel_pub_timer_period, self.pixel_pub_timer_callback)
-
-        self.get_logger().info('Connecting to light node...')
-        light_node_name = '/pixel_strip'
-        param_names = []
-        self.light_node_get_parameters_cli = self.create_client(
-            GetParameters, light_node_name + '/get_parameters')
-        if not self.light_node_get_parameters_cli.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('get parameters service not available, waiting again...')
-        else:
-            req = GetParameters.Request()
-            req.names = param_names
-            self.get_logger().info('Connected to light node!')
-            self.get_logger().info('Sending get parameters request...')
-            future = self.light_node_get_parameters_cli.call_async(req)
-            rclpy.spin_until_future_complete(self, future)
-            resp = future.result()
-
-            for i in range(len(param_names)):
-                if resp.values[i].type == rclpy.Parameter.Type.INTEGER:
-                    self.get_logger().info(
-                        f'{param_names[i]}: {resp.values[i].integer_value}')
-
-        # Send moveit servo command
-
-        self.m = 5
-        self.k_p = 0.02
-        self.c_p = 25.0
-        self.k_o = 0.1
-        self.c_o = 0.1
-
-        self.pan_pos = (0., 0., 0.)
-        self.pan_vel = (0., 0., 0.)
-        self.pan_vel_max = (1, 1, 1)
-        self.pan_goal = (0., 0., 0.)
-
-        self.orbit_pos = (0., 0., 0.)
-        self.orbit_vel = (0., 0., 0.)
-        self.orbit_vel_max = (0.1, 0.1, 0.1)
-        self.orbit_goal = (0., 0., 0.)
-
-        self.zoom_pos = 0.0
-        self.zoom_vel = 0.0
-        self.zoom_vel_max = 1.0
-        self.zoom_goal = 0.0
-
-        # Call /servo_node/start_servo service
-        self.get_logger().info('Connecting to servo node...')
-        self.start_servo_cli = self.create_client(
-            Trigger, '/servo_node/start_servo')
-        if not self.start_servo_cli.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('start servo service not available, waiting again...')
-        else:
-            req = Trigger.Request()
-            self.get_logger().info('Connected to servo node!')
-            self.get_logger().info('Sending start servo request...')
-            future = self.start_servo_cli.call_async(req)
-            rclpy.spin_until_future_complete(self, future)
-            resp = future.result()
-            self.get_logger().info('Servo node started!')
-
-        self.twist_pub = self.create_publisher(
-            TwistStamped, '/servo_node/delta_twist_cmds', 10)
-        self.twist_pub_timer_period = 0.1
-        # self.twist_pub_timer = self.create_timer(
-        # self.twist_pub_timer_period, self.twist_pub_timer_callback)
-
-        light_ring = o3d.geometry.TriangleMesh.create_cylinder(
-            radius=0.1, height=0.01)
-        # o3d.io.read_triangle_mesh(
-        # "/home/col/Inspection/dev_ws/src/inspection_gui/inspection_gui/light_ring.stl")
-        self.light_ring = o3d.geometry.LineSet.create_from_triangle_mesh(
-            light_ring)
-        self.camera = o3d.geometry.LineSet().create_camera_visualization(
-            self.depth_intrinsic, extrinsic=np.eye(4))
-
-        self.geom_pcd = self.generate_point_cloud()
         self.camera_params = {}
 
-        # Macro Camera
         self.get_logger().info('Connecting to camera1 node...')
         camera_node_name = 'camera1'
         param_names = []
         self.camera_node_list_parameters_cli = self.create_client(
-            ListParameters, camera_node_name + '/list_parameters')
+            ListParameters, camera_node_name + '/list_parameters', callback_group=macro_camera_cb_group)
         if not self.camera_node_list_parameters_cli.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('List parameters service not available, waiting again...')
         else:
@@ -220,7 +118,7 @@ class RosThread(Node):
                 param_names.append(param_name)
 
         self.camera_node_describe_parameters_cli = self.create_client(
-            DescribeParameters, camera_node_name + '/describe_parameters')
+            DescribeParameters, camera_node_name + '/describe_parameters', callback_group=macro_camera_cb_group)
         if not self.camera_node_describe_parameters_cli.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('Describe parameters service not available, waiting again...')
         else:
@@ -240,7 +138,7 @@ class RosThread(Node):
                 self.camera_params[param.name]['read_only'] = param.read_only
 
         self.camera_node_get_parameters_cli = self.create_client(
-            GetParameters, camera_node_name + '/get_parameters')
+            GetParameters, camera_node_name + '/get_parameters', callback_group=macro_camera_cb_group)
         if not self.camera_node_get_parameters_cli.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('get parameters service not available, waiting again...')
         else:
@@ -282,32 +180,161 @@ class RosThread(Node):
 
         # Set Parameters Client
         self.set_camera_params_cli = self.create_client(
-            SetParameters, 'camera1/set_parameters')
+            SetParameters, 'camera1/set_parameters', callback_group=macro_camera_cb_group)
         if not self.set_camera_params_cli.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('set parameters service not available, waiting again...')
 
-        # Get all frames in tf tree
-        self.tfBuffer = tf2_ros.Buffer()
-        self.staticTfBroadcaster = tf2_ros.StaticTransformBroadcaster(self)
-
         # Capture Image Client
         self.capture_image_cli = self.create_client(
-            CaptureImage, '/capture_image')
+            CaptureImage, '/capture_image', callback_group=macro_camera_cb_group)
         if not self.capture_image_cli.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('capture image service not available, waiting again...')
         else:
             self.get_logger().info('Connected to capture image service!')
 
-        # Create move to pose client
+        # STEREO CAMERA ##################################################################
+
+        stereo_camera_cb_group = MutuallyExclusiveCallbackGroup()
+
+        self.depth_intrinsic_sub = self.create_subscription(
+            Image, "/camera/camera/depth/camera_info", self.depth_intrinsic_callback, 10, callback_group=stereo_camera_cb_group)
+        # self.depth_image_sub = self.create_subscription(
+        # Image, "/camera/camera/depth/image_rect_raw", self.depth_image_callback, 10)
+
+        self.depth_trunc = 1.0
+
+        depth_image_sub = message_filters.Subscriber(self,
+                                                     Image, "/camera/camera/depth/image_rect_raw")
+        rgb_image_sub = message_filters.Subscriber(self,
+                                                   Image, "/camera/camera/color/image_rect_raw")
+        # gphoto2_image_sub = message_filters.Subscriber(self,
+        #    Image, "/camera1/image_raw")
+        ts = Tf2MessageFilter(self, [depth_image_sub, rgb_image_sub], 'part_frame',
+                              'camera_depth_optical_frame', queue_size=1000)
+        ts.registerCallback(self.depth_image_callback)
+
+        # Inference
+
+        self.twist = TwistStamped()
+        self.twist.header.frame_id = 'tool0'
+        inference_timer_period = 0.1
+        # self.inference_timer = self.create_timer(
+        # inference_timer_period, self.inference_timer_callback)
+
+        # LIGHTS #########################################################################
+
+        lights_cb_group = MutuallyExclusiveCallbackGroup()
+
+        self.capture_image_future = None
+        self.pixel_strip_msg = PixelStrip()
+        self.pixel_count = 148
+        self.wb = [1.0, 1.0, 1.0]
+        self.pixel_strip_msg.pixel_colors = self.pixel_count * \
+            [ColorRGBA(r=0.0, g=0.0, b=0.0)]
+        pixel_pub_timer_period = 0.1
+        self.pixel_pub = self.create_publisher(PixelStrip, '/pixel_strip', 10)
+        self.pixel_pub_timer = self.create_timer(
+            pixel_pub_timer_period, self.pixel_pub_timer_callback, callback_group=lights_cb_group)
+
+        self.get_logger().info('Connecting to light node...')
+        light_node_name = '/pixel_strip'
+        param_names = []
+        self.light_node_get_parameters_cli = self.create_client(
+            GetParameters, light_node_name + '/get_parameters', callback_group=lights_cb_group)
+        if not self.light_node_get_parameters_cli.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('get parameters service not available, waiting again...')
+        else:
+            req = GetParameters.Request()
+            req.names = param_names
+            self.get_logger().info('Connected to light node!')
+            self.get_logger().info('Sending get parameters request...')
+            future = self.light_node_get_parameters_cli.call_async(req)
+            rclpy.spin_until_future_complete(self, future)
+            resp = future.result()
+
+            for i in range(len(param_names)):
+                if resp.values[i].type == rclpy.Parameter.Type.INTEGER:
+                    self.get_logger().info(
+                        f'{param_names[i]}: {resp.values[i].integer_value}')
+
+        # SERVO #########################################################################
+
+        servo_cb_group = MutuallyExclusiveCallbackGroup()
+
+        self.m = 5
+        self.k_p = 0.02
+        self.c_p = 45.0
+        self.k_o = 0.1
+        self.c_o = 0.1
+
+        self.pan_pos = (0., 0., 0.)
+        self.pan_vel = (0., 0., 0.)
+        self.pan_vel_max = (1, 1, 1)
+        self.pan_goal = (0., 0., 0.)
+
+        self.orbit_pos = (0., 0., 0.)
+        self.orbit_vel = (0., 0., 0.)
+        self.orbit_vel_max = (0.1, 0.1, 0.1)
+        self.orbit_goal = (0., 0., 0.)
+
+        self.zoom_pos = 0.0
+        self.zoom_vel = 0.0
+        self.zoom_vel_max = 1.0
+        self.zoom_goal = 0.0
+
+        # Call /servo_node/start_servo service
+        self.get_logger().info('Connecting to servo node...')
+        self.start_servo_cli = self.create_client(
+            Trigger, '/servo_node/start_servo', callback_group=servo_cb_group)
+        if not self.start_servo_cli.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('start servo service not available, waiting again...')
+        else:
+            req = Trigger.Request()
+            self.get_logger().info('Connected to servo node!')
+            self.get_logger().info('Sending start servo request...')
+            future = self.start_servo_cli.call_async(req)
+            rclpy.spin_until_future_complete(self, future)
+            resp = future.result()
+            self.get_logger().info('Servo node started!')
+
+        self.twist_pub = self.create_publisher(
+            TwistStamped, '/servo_node/delta_twist_cmds', 10)
+        self.twist_pub_timer_period = 0.1
+        self.twist_pub_timer = self.create_timer(
+            self.twist_pub_timer_period, self.twist_pub_timer_callback, callback_group=servo_cb_group)
+
+        light_ring = o3d.geometry.TriangleMesh.create_cylinder(
+            radius=0.1, height=0.01)
+        self.light_ring = o3d.geometry.LineSet.create_from_triangle_mesh(
+            light_ring)
+        self.camera = o3d.geometry.LineSet().create_camera_visualization(
+            self.depth_intrinsic, extrinsic=np.eye(4))
+
+        self.geom_pcd = self.generate_point_cloud()
+
+        # TF2 #########################################################################
+
+        self.tfBuffer = tf2_ros.Buffer()
+        self.staticTfBroadcaster = tf2_ros.StaticTransformBroadcaster(self)
+
+        # MoveIt #########################################################################
+
+        moveit_cb_group = MutuallyExclusiveCallbackGroup()
 
         self.target_pose_publisher = self.create_publisher(
             PoseStamped, 'move_to_pose_target', 10)
         self.move_to_pose_cli = self.create_client(
-            MoveToPose, 'inspection/move_to_pose')
+            MoveToPose, 'inspection/move_to_pose', callback_group=moveit_cb_group)
         if not self.move_to_pose_cli.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('moveit path planning service not available, waiting again...')
         else:
             self.get_logger().info('Connected to moveit path planning service!')
+
+    def start_measure(self):
+        self.t0 = time.time()
+
+    def stop_measure(self):
+        self.get_logger().info(f'Measurement time: {time.time() - self.t0}')
 
     def move_to_pose(self, tf, frame_id):
         self.moving_to_viewpoint = True
@@ -355,14 +382,10 @@ class RosThread(Node):
             pixel_colors.append(color)
         self.pixel_strip_msg.pixel_colors = pixel_colors
 
-    def lights_off(self):
-        self.lights_on(0)
-
     def pixel_pub_timer_callback(self):
         self.pixel_pub.publish(self.pixel_strip_msg)
 
     def capture_image(self, file_path):
-        self.lights_on(100.0)
         self.get_logger().info(f'Capturing image to: {file_path}')
         req = CaptureImage.Request()
         req.file_path = file_path
@@ -543,12 +566,21 @@ class RosThread(Node):
         self.zoom_vel = vz1
         self.zoom_goal = pz1
 
-        self.twist.twist.linear.x = -vx1
-        self.twist.twist.linear.y = vz1
-        self.twist.twist.linear.z = vy1
+        if abs(vx1) < 0.25:
+            vx1 = 0.0
+        if abs(vy1) < 0.25:
+            vy1 = 0.0
+        if abs(vz1) < 0.25:
+            vz1 = 0.0
 
-        self.twist.header.stamp = self.get_clock().now().to_msg()
-        self.twist_pub.publish(self.twist)
+        # Publish twist if any values are non-zero
+        if vx1 != 0.0 or vy1 != 0.0 or vz1 != 0.0:
+            self.twist.twist.linear.x = -vx1
+            self.twist.twist.linear.y = vz1
+            self.twist.twist.linear.z = vy1
+
+            self.twist.header.stamp = self.get_clock().now().to_msg()
+            self.twist_pub.publish(self.twist)
 
     def generate_point_cloud(self):
         new_pcd = o3d.geometry.PointCloud()
@@ -566,7 +598,9 @@ class RosThread(Node):
         asyncio.set_event_loop()
 
     def update(self):
-        rclpy.spin(self)
+        executor = MultiThreadedExecutor()
+        executor.add_node(self)
+        executor.spin()
 
     def depth_intrinsic_callback(self, msg):
         # Convert ROS message to Open3D camera intrinsic
@@ -641,6 +675,8 @@ class RosThread(Node):
         self.focus_monitor.set_metric(name)
 
     def compressed_image_callback(self, msg):
+        # self.stop_measure()
+        # self.start_measure()
         self.gphoto2_image = self.bridge.compressed_imgmsg_to_cv2(
             msg, desired_encoding="rgb8").astype(np.uint8)
 
@@ -658,17 +694,24 @@ class RosThread(Node):
         focus_value, focus_image = self.focus_monitor.measure_focus(
             self.gphoto2_image)
 
+        self.filtered_focus_value = self.focus_value_alpha * focus_value + \
+            (1 - self.focus_value_alpha) * self.filtered_focus_value
+
         # Publish focus value
         self.focus_pub.publish(FocusValue(
-            header=msg.header, metric=self.focus_monitor.metric, data=focus_value))
+            header=msg.header, metric=self.focus_monitor.metric, data=self.filtered_focus_value, raw_data=focus_value))
 
         # self.focus_metric_dict['sobel']['buffer'].append(metrics.)
 
-        if len(self.focus_metric_dict['metrics']['sobel']['value']) > self.focus_metric_dict['buffer_size']:
-            self.focus_metric_dict['metrics']['sobel']['value'].pop(0)
+        if len(self.focus_metric_dict['metrics']['sobel']['filtered_value']) > self.focus_metric_dict['buffer_size']:
             self.focus_metric_dict['metrics']['sobel']['time'].pop(0)
+            self.focus_metric_dict['metrics']['sobel']['filtered_value'].pop(0)
+            self.focus_metric_dict['metrics']['sobel']['raw_value'].pop(0)
         self.focus_metric_dict['metrics']['sobel']['time'].append(time.time())
-        self.focus_metric_dict['metrics']['sobel']['value'].append(focus_value)
+        self.focus_metric_dict['metrics']['sobel']['filtered_value'].append(
+            self.filtered_focus_value)
+        self.focus_metric_dict['metrics']['sobel']['raw_value'].append(
+            focus_value)
         self.focus_metric_dict['metrics']['sobel']['image'] = focus_image
 
         # cv2.rectangle(self.gphoto2_image, (x0, y0), (x1, y1),

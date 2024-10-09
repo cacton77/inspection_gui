@@ -11,8 +11,10 @@ import open3d.visualization.gui as gui
 import numpy as np
 import threading
 import time
+import copy
 import matplotlib.pyplot as plt
 from matplotlib import colormaps
+from multiprocessing import Pipe, shared_memory, Manager, Event
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from io import BytesIO
 from inspection_gui.assets.materials import Materials
@@ -22,6 +24,7 @@ from inspection_gui.threads.reconstruct import ReconstructThread
 from inspection_gui.threads.partitioner import Partitioner, NPCD
 from inspection_gui.threads.plotting import PlottingThread
 from inspection_gui.threads.lighting import LightMap
+from inspection_gui.processes.plotting import PlottingProcess
 # from inspection_gui.threads.moveit import MoveItThread
 
 # Custom UI Panel definitions
@@ -99,12 +102,6 @@ class MyGui():
 
         self.app = gui.Application.instance
 
-        # icons_font = gui.FontDescription(
-        #     '/tmp/MaterialIcons-Regular.ttf', point_size=12)
-        # icons_font.add_typeface_for_code_points(
-        #     '/tmp/MaterialIcons-Regular.ttf', [0xE037, 0xE034])
-        # icons_font_id = gui.Application.instance.add_font(icons_font)
-
         self.window = self.app.create_window(
             "Inspection GUI", width=1920, height=1080, x=0, y=30)
 
@@ -132,7 +129,46 @@ class MyGui():
         self.ros_thread = RosThread(stream_id=0)  # 0 id for main camera
         # self.moveit_thread = MoveItThread(name='moveit_py_planning_scene')
         self.reconstruct_thread = ReconstructThread(rate=20)
-        self.plotting_thread = PlottingThread()
+        # self.plotting_thread = PlottingThread()
+
+        self.plotting_data = {'depth_image': None,
+                              'focus_metric_time': None,
+                              'filtered_focus_metric_data': None,
+                              'raw_focus_metric_data': None,
+                              'focus_metric_image': None}
+
+        max_size = 480 * 640 * 3
+
+        manager = Manager()
+        self.shared_data_dict = manager.dict()
+        self.shared_data_dict['depth_image'] = {'shape': (480, 640, 3)}
+        self.shared_data_dict['focus_plot'] = {'shape': (480, 640, 3)}
+        self.shared_data_dict['focus_image'] = {'shape': (480, 640, 3)}
+
+        try:
+            shm_depth_image = shared_memory.SharedMemory(
+                create=True, size=max_size, name='depth_image')
+        except FileExistsError:
+            shm_depth_image = shared_memory.SharedMemory(
+                size=max_size, name='depth_image')
+        try:
+            shm_focus_plot = shared_memory.SharedMemory(
+                create=True, size=max_size, name='focus_plot')
+        except FileExistsError:
+            shm_focus_plot = shared_memory.SharedMemory(
+                size=max_size, name='focus_plot')
+        try:
+            shm_focus_image = shared_memory.SharedMemory(
+                create=True, size=max_size, name='focus_image')
+        except FileExistsError:
+            shm_focus_image = shared_memory.SharedMemory(
+                size=max_size, name='focus_image')
+
+        self.plotting_pipe, child_conn = Pipe()
+        self.plotting_process = PlottingProcess(
+            child_conn, self.shared_data_dict)
+
+        self.plotting_process.start()
 
         light_locations = np.loadtxt(
             self.inspection_root_path + '/Lights/led_positions.csv', delimiter=',')
@@ -142,7 +178,7 @@ class MyGui():
 
         self.ros_thread.start()  # processing frames in input stream
         self.reconstruct_thread.start()  # processing frames in input stream
-        self.plotting_thread.start()
+        # self.plotting_thread.start()
         self.light_map.start()
         # self.moveit_thread.start()
 
@@ -372,8 +408,44 @@ class MyGui():
         self.light_position_y_slider.set_on_value_changed(
             _on_light_position_y_changed)
 
-        self.light_panel.add_child(gui.Label("Light Map: "))
         self.light_panel.add_child(self.light_map_image)
+        self.light_panel.add_child(gui.Label("White Balance: "))
+
+        def _on_wb_red_edit(value):
+            self.ros_thread.wb[0] = value
+            self.set_pixels()
+
+        def _on_wb_green_edit(value):
+            self.ros_thread.wb[1] = value
+            self.set_pixels()
+
+        def _on_wb_blue_edit(value):
+            self.ros_thread.wb[2] = value
+            self.set_pixels()
+
+        red_edit = gui.NumberEdit(gui.NumberEdit.DOUBLE)
+        red_edit.double_value = self.config_dict['lights']['white_balance']['red']
+        red_edit.set_on_value_changed(_on_wb_red_edit)
+        self.ros_thread.wb[0] = red_edit.double_value
+        green_edit = gui.NumberEdit(gui.NumberEdit.DOUBLE)
+        green_edit.double_value = self.config_dict['lights']['white_balance']['green']
+        green_edit.set_on_value_changed(_on_wb_green_edit)
+        self.ros_thread.wb[1] = green_edit.double_value
+        blue_edit = gui.NumberEdit(gui.NumberEdit.DOUBLE)
+        blue_edit.double_value = self.config_dict['lights']['white_balance']['blue']
+        self.ros_thread.wb[2] = blue_edit.double_value
+        blue_edit.set_on_value_changed(_on_wb_blue_edit)
+        horiz = gui.Horiz(0, gui.Margins(
+            0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+        horiz.add_child(gui.Label("R: "))
+        horiz.add_child(red_edit)
+        horiz.add_fixed(0.5 * em)
+        horiz.add_child(gui.Label("G: "))
+        horiz.add_child(green_edit)
+        horiz.add_fixed(0.5 * em)
+        horiz.add_child(gui.Label("B: "))
+        horiz.add_child(blue_edit)
+        self.light_panel.add_child(horiz)
 
         self.light_panel.add_child(gui.Label("Intensity: "))
         self.light_panel.add_child(self.light_intensity_slider)
@@ -785,22 +857,22 @@ class MyGui():
                 (self.roi_height/self.fov_height_px)
 
         def _on_fov_width_px_edit(value):
-            self.fov_width_px = value
+            self.fov_width_px = int(value)
             self.partitioner.fov_width = self.fov_width_mm * \
                 (self.roi_width/self.fov_width_px)
 
         def _on_fov_height_px_edit(value):
-            self.fov_height_px = value
+            self.fov_height_px = int(value)
             self.partitioner.fov_height = self.fov_height_mm * \
                 (self.roi_height/self.fov_height_px)
 
         def _on_roi_width_px_edit(value):
-            self.roi_width = value
+            self.roi_width = int(value)
             self.partitioner.fov_width = self.fov_width_mm * \
                 (self.roi_width/self.fov_width_px)
 
         def _on_roi_height_edit(value):
-            self.roi_height = value
+            self.roi_height = int(value)
             self.partitioner.fov_height = self.fov_height_mm * \
                 (self.roi_height/self.fov_height_px)
 
@@ -865,13 +937,22 @@ class MyGui():
         dof_focal_distance_grid.add_child(gui.Label("Focal distance (mm): "))
         dof_focal_distance_grid.add_child(self.focal_distance_edit)
 
-        svert.add_child(gui.Label('FOV:'))
-        svert.add_child(fov_px_grid)
-        svert.add_child(fov_mm_grid)
-        svert.add_child(gui.Label('ROI:'))
-        svert.add_child(roi_grid)
-        svert.add_child(gui.Label('Focal Depth:'))
-        svert.add_child(dof_focal_distance_grid)
+        self.roi_image_widget = gui.ImageWidget()
+        self.roi_image_widget.update_image(o3d.geometry.Image(
+            np.zeros((self.roi_height, self.roi_width, 3), dtype=np.uint8)))
+
+        camera_tabs = gui.TabControl()
+
+        settings_vert = gui.Vert(0, gui.Margins(
+            0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+
+        settings_vert.add_child(gui.Label('FOV:'))
+        settings_vert.add_child(fov_px_grid)
+        settings_vert.add_child(fov_mm_grid)
+        settings_vert.add_child(gui.Label('ROI:'))
+        settings_vert.add_child(roi_grid)
+        settings_vert.add_child(gui.Label('Focal Depth:'))
+        settings_vert.add_child(dof_focal_distance_grid)
 
         # Camera settings
 
@@ -980,14 +1061,14 @@ class MyGui():
             grid.add_child(edit)
             # self.main_camera_panel.add_child(grid)
 
-        svert.add_child(gui.Label('Camera Settings:'))
-        svert.add_child(grid)
+        settings_vert.add_child(gui.Label('Camera Settings:'))
+        settings_vert.add_child(grid)
 
-        self.right_panel_tabs.add_tab("Camera", svert)
+        camera_tabs.add_tab("Settings", settings_vert)
 
         # METRIC PANEL ########################
 
-        focus_vert = gui.ScrollableVert(0, gui.Margins(
+        focus_vert = gui.Vert(0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
 
         grid = gui.VGrid(2, 0.25 * em)
@@ -1002,8 +1083,19 @@ class MyGui():
         self.focus_metric_select.set_on_selection_changed(
             on_focus_metric_changed)
 
+        def _on_focus_value_filter_changed(value):
+            self.ros_thread.focus_value_alpha = value
+
+        focus_value_alpha_edit = gui.Slider(gui.Slider.DOUBLE)
+        focus_value_alpha_edit.set_limits(0, 1)
+        focus_value_alpha_edit.set_on_value_changed(
+            _on_focus_value_filter_changed)
+        focus_value_alpha_edit.double_value = self.ros_thread.focus_value_alpha
+
         grid.add_child(gui.Label("Focus Metric: "))
         grid.add_child(self.focus_metric_select)
+        grid.add_child(gui.Label("Focus Value Filter: "))
+        grid.add_child(focus_value_alpha_edit)
 
         self.focus_metric_figure = plt.figure()
         self.focus_metric_plot_image = gui.ImageWidget()
@@ -1015,7 +1107,16 @@ class MyGui():
         focus_vert.add_child(self.focus_metric_plot_image)
         focus_vert.add_child(self.focus_metric_image)
 
-        self.right_panel_tabs.add_tab("Focus", focus_vert)
+        camera_tabs.add_tab("Focus", focus_vert)
+
+        camera_vert = gui.Vert(0, gui.Margins(
+            0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+        camera_vert.add_fixed(0.5 * em)
+        camera_vert.add_child(self.roi_image_widget)
+        camera_vert.add_fixed(0.5 * em)
+        camera_vert.add_child(camera_tabs)
+
+        self.right_panel_tabs.add_tab("Macro Camera", camera_vert)
 
         # STEREO CAMERA TAB #########################################################
 
@@ -1228,13 +1329,13 @@ class MyGui():
         self.main_tabs.add_tab("Monitor", self.monitor_ribbon)
 
         self.window.add_child(self.scene_widget)
-        self.window.add_child(self.monitor_image_panel)
         self.window.add_child(self.main_tabs)
         self.window.add_child(self.part_frame_panel)
         self.window.add_child(self.camera_frame_panel)
         self.window.add_child(self.footer_panel)
         self.window.add_child(self.log_panel)
         self.window.add_child(self.viewpoint_generation_panel)
+        self.window.add_child(self.monitor_image_panel)
         self.window.add_child(self.light_panel)
         self.window.add_child(self.right_panel)
         self.window.set_on_layout(self._on_layout)
@@ -1838,9 +1939,9 @@ class MyGui():
         elif event.type == gui.MouseEvent.Type.WHEEL:
             # Zoom
             if event.wheel_dy > 0:
-                self.ros_thread.zoom(500)
+                self.ros_thread.zoom(1000)
             else:
-                self.ros_thread.zoom(-500)
+                self.ros_thread.zoom(-1000)
         return gui.Widget.EventCallbackResult.IGNORED
 
     def _on_menu_show_axes(self):
@@ -2140,6 +2241,52 @@ class MyGui():
         illuminance_image_o3d = o3d.geometry.Image(
             cv2.cvtColor(illuminance_image, cv2.COLOR_GRAY2RGB))
 
+        # Pass data to Plotting Process
+
+        filtered_focus_metric_data = self.ros_thread.focus_metric_dict[
+            'metrics']['sobel']['filtered_value']
+        raw_focus_metric_data = self.ros_thread.focus_metric_dict[
+            'metrics']['sobel']['raw_value']
+        focus_metric_time = self.ros_thread.focus_metric_dict['metrics']['sobel']['time']
+        focus_metric_image = self.ros_thread.focus_metric_dict['metrics']['sobel']['image']
+
+        self.plotting_data['depth_image'] = depth_image
+        self.plotting_data['focus_metric_time'] = focus_metric_time
+        self.plotting_data['filtered_focus_metric_data'] = filtered_focus_metric_data
+        self.plotting_data['raw_focus_metric_data'] = raw_focus_metric_data
+        self.plotting_data['focus_metric_image'] = focus_metric_image
+
+        t0 = time.time()
+        self.plotting_pipe.send(self.plotting_data)
+
+        # t0 = time.time()
+        # plotting_results = self.plotting_pipe.recv()
+        # t1 = time.time()
+        # print(f"Plotting receive Time: {t1-t0}")
+        depth_image_cv2_shape = self.shared_data_dict['depth_image']['shape']
+        focus_metric_plot_cv2_shape = self.shared_data_dict['focus_plot']['shape']
+        focus_metric_image_cv2_shape = self.shared_data_dict['focus_image']['shape']
+
+        shm = shared_memory.SharedMemory(name='depth_image')
+        depth_image_cv2 = np.ndarray(
+            depth_image_cv2_shape, dtype=np.uint8, buffer=shm.buf)
+
+        shm = shared_memory.SharedMemory(name='focus_plot')
+        shared_array = np.ndarray(
+            focus_metric_plot_cv2_shape, dtype=np.uint8, buffer=shm.buf)
+        focus_metric_plot_cv2 = np.zeros(
+            focus_metric_plot_cv2_shape, dtype=np.uint8)
+        np.copyto(focus_metric_plot_cv2, shared_array)
+
+        shm = shared_memory.SharedMemory(name='focus_image')
+        focus_metric_image_cv2 = np.ndarray(
+            focus_metric_image_cv2_shape, dtype=np.uint8, buffer=shm.buf)
+        # focus_metric_image_cv2 = np.zeros(
+        #     focus_metric_image_cv2_shape, dtype=np.uint8)
+        # np.copyto(focus_metric_image_cv2, shared_array)
+        t1 = time.time()
+        print(f"Plotting receive Time: {t1-t0}")
+
         # Get data from ReconstructThread
         live_point_cloud = self.reconstruct_thread.live_point_cloud
 
@@ -2333,11 +2480,13 @@ class MyGui():
             scale_h = height_u/height_px
             scale = scale_w
 
+            monitor_image = copy.deepcopy(gphoto2_image)
+
             # crop the top and bottom of the image to fit the widget
             if height_px*scale_w > height_u:
                 crop_u = (height_px*scale - height_u)
                 crop_px = int(crop_u/scale/2)+1
-                gphoto2_image = gphoto2_image[crop_px+1:height_px - crop_px, :]
+                monitor_image = monitor_image[crop_px+1:height_px - crop_px, :]
                 scale = scale_w
             # elif width_px*scale_h > width_u:
             #     crop_u = (width_px*scale - width_u)
@@ -2346,8 +2495,8 @@ class MyGui():
             #     gphoto2_image = gphoto2_image[:, crop_px:width_px - crop_px]
             #     scale = scale_h
 
-            gphoto2_image = cv2.resize(
-                gphoto2_image, (0, 0), fx=scale, fy=scale)
+            monitor_image = cv2.resize(
+                monitor_image, (0, 0), fx=scale, fy=scale)
 
             # Draw ROI on image
             # roi_width = int(scale*self.roi_width)
@@ -2357,8 +2506,8 @@ class MyGui():
             # gphoto2_image = cv2.rectangle(
             #     gphoto2_image, (roi_x, roi_y), (roi_x+roi_width, roi_y+roi_height), (255, 255, 255), 2)
             # Draw a circle in the center of the image
-            gphoto2_image = cv2.circle(
-                gphoto2_image, (int(gphoto2_image.shape[1]/2), int(gphoto2_image.shape[0]/2)), 10, (255, 255, 255), 1)
+            monitor_image = cv2.circle(
+                monitor_image, (int(monitor_image.shape[1]/2), int(monitor_image.shape[0]/2)), 10, (255, 255, 255), 1)
 
             if self.pan_pos is not None:
                 frame_origin = (self.monitor_image_widget.frame.get_left(),
@@ -2370,8 +2519,8 @@ class MyGui():
                 pos = ((self.pan_pos[0] - frame_origin[0])/frame_width,
                        (self.pan_pos[1] - frame_origin[1])/frame_height)
 
-                width = gphoto2_image.shape[1]
-                height = gphoto2_image.shape[0]
+                width = monitor_image.shape[1]
+                height = monitor_image.shape[0]
 
                 p = (int(pos[0]*width), int(pos[1]*height))
 
@@ -2380,28 +2529,33 @@ class MyGui():
                             (self.pan_goal[1] - frame_origin[1])/frame_height)
 
                     g = (int(goal[0]*width), int(goal[1]*height))
-                    gphoto2_image = cv2.arrowedLine(
-                        gphoto2_image, p, g, (255, 255, 255), 5)
+                    monitor_image = cv2.arrowedLine(
+                        monitor_image, p, g, (255, 255, 255), 5)
                 # Draw circle at pan_pos
-                gphoto2_image = cv2.circle(
-                    gphoto2_image, p, 10, (255, 255, 255), -1)
+                monitor_image = cv2.circle(
+                    monitor_image, p, 10, (255, 255, 255), -1)
 
-            gphoto2_image_o3d = o3d.geometry.Image(gphoto2_image)
+            monitor_image_o3d = o3d.geometry.Image(monitor_image)
 
-            self.monitor_image_widget.update_image(gphoto2_image_o3d)
+            self.monitor_image_widget.update_image(monitor_image_o3d)
 
         # METRIC PANEL ###########################################################
 
         if self.right_panel.get_is_open():
 
-            focus_metric_data = self.ros_thread.focus_metric_dict['metrics']['sobel']['value']
-            focus_metric_time = self.ros_thread.focus_metric_dict['metrics']['sobel']['time']
-            focus_metric_image = self.ros_thread.focus_metric_dict['metrics']['sobel']['image']
+            x0 = int(gphoto2_image.shape[1]/2 - self.roi_width/2)
+            y0 = int(gphoto2_image.shape[0]/2 - self.roi_height/2)
+            roi_image = gphoto2_image[y0:y0 +
+                                      self.roi_height, x0:x0+self.roi_width]
+            self.roi_image_widget.update_image(
+                o3d.geometry.Image(np.ascontiguousarray(roi_image)))
 
-            self.plotting_thread.update_focus_metric(
-                focus_metric_time, focus_metric_data, focus_metric_image)
-            focus_metric_plot_cv2 = self.plotting_thread.get_focus_metric_plot()
-            focus_metric_image_cv2 = self.plotting_thread.get_focus_metric_image()
+            # Update plots
+
+            # self.plotting_thread.update_focus_metric(
+            # focus_metric_time, filtered_focus_metric_data, raw_focus_metric_data, focus_metric_image)
+            # focus_metric_plot_cv2 = self.plotting_thread.get_focus_metric_plot()
+            # focus_metric_image_cv2 = self.plotting_thread.get_focus_metric_image()
 
             focus_metric_plot_o3d = o3d.geometry.Image(focus_metric_plot_cv2)
             self.focus_metric_plot_image.update_image(focus_metric_plot_o3d)
@@ -2494,7 +2648,7 @@ class MyGui():
 
         # Light Control Panel
 
-        top = self.main_tabs.frame.get_bottom() + 2*em
+        top = self.main_tabs.frame.get_bottom() + 1*em
 
         width = self.light_panel.calc_preferred_size(
             layout_context, gui.Widget.Constraints()).width
@@ -2505,7 +2659,7 @@ class MyGui():
         if not self.light_panel.get_is_open():
             width = 7.5 * em
         else:
-            height = 40 * em
+            height = 42 * em
 
         self.light_panel.frame = gui.Rect(
             0, top, width, height)
