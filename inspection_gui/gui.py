@@ -729,14 +729,15 @@ class MyGui():
         # action_grid.add_child(horiz)
 
         def _on_go_button_clicked():
-            self.t0 = time.time()
-            self.running = not self.running
-            if self.running:
-                self.go_button.text = " Stop "
-                self.go_button.background_color = gui.Color(0.8, 0.0, 0.0, 1.0)
-            else:
-                self.go_button.text = " Go "
-                self.go_button.background_color = gui.Color(0.0, 0.8, 0.0, 1.0)
+            self.ros_thread.trigger_focus_experiment()
+            # self.t0 = time.time()
+            # self.running = not self.running
+            # if self.running:
+            #     self.go_button.text = " Stop "
+            #     self.go_button.background_color = gui.Color(0.8, 0.0, 0.0, 1.0)
+            # else:
+            #     self.go_button.text = " Go "
+            #     self.go_button.background_color = gui.Color(0.0, 0.8, 0.0, 1.0)
 
         self.t0 = 0
         self.running = False

@@ -330,6 +330,13 @@ class RosThread(Node):
         else:
             self.get_logger().info('Connected to moveit path planning service!')
 
+        # FOCUS EXPERIMENT
+
+        # Run focus test
+        self.focus_experiment_trigger = Trigger.Request()
+        self.focus_experiment_cli = self.create_client(
+            Trigger, '/inspection/count_callback', callback_group=None)
+
     def start_measure(self):
         self.t0 = time.time()
 
@@ -717,6 +724,19 @@ class RosThread(Node):
         # cv2.rectangle(self.gphoto2_image, (x0, y0), (x1, y1),
         #   color=(204, 108, 231), thickness=2)
         #   color=(255, 255, 255), thickness=2)
+
+    def trigger_focus_experiment(self):
+        future = self.focus_experiment_cli.call_async(
+            self.focus_experiment_trigger)
+        future.add_done_callback(self.focus_experiment_callback)
+
+    def focus_experiment_callback(self, future):
+        try:
+            resp = future.result()
+            self.get_logger().info('Focus experiment response: %s' % resp.done)
+        except Exception as e:
+            self.get_logger().info(
+                'Service call failed %r' % (e,))
 
     def get_data(self):
         return self.rgb_image, self.annotated_rgb_image, self.depth_image, self.depth_intrinsic, self.illuminance_image, self.gphoto2_image, self.T
