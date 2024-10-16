@@ -198,7 +198,7 @@ class FocusMonitor:
 
         # Compute the weighted mean
         weighted_bandpass = bandpass * weights
-        focus_value = np.var(weighted_bandpass[y0:y1, x0:x1])
+        focus_value = np.var(bandpass[y0:y1, x0:x1])
 
         # For visualization, normalize the weighted bandpass image
         bandpass_normalized = cv2.normalize(weighted_bandpass, None, 0, 255, cv2.NORM_MINMAX)
