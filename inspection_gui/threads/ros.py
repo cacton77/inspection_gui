@@ -71,7 +71,7 @@ class RosThread(Node):
 
         macro_camera_cb_group = MutuallyExclusiveCallbackGroup()
 
-        self.focus_monitor = FocusMonitor(0.5, 0.5, 300, 300, 'squared_sobel')
+        self.focus_monitor = FocusMonitor(0.5, 0.5, 300, 300, 'sobel')
         self.gphoto2_image = np.zeros((576, 1024, 3), dtype=np.uint8)
         self.focus_metric_dict = {}
         self.focus_metric_dict['buffer_size'] = 100
