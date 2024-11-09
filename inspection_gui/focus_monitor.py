@@ -2,7 +2,6 @@ import cv2
 import numpy as np
 from scipy.stats import entropy
 
-
 class FocusMonitor:
 
     def __init__(self, cx, cy, w, h, metric='sobel'):
@@ -16,7 +15,7 @@ class FocusMonitor:
         self.dict = {}
 
     def get_metrics():
-        return ['Variance of Sobel', 'Squared Gradient', 'Squared Sobel', 'FSWM', 'FFT', 'Mix Sobel', 'Wavelet', 'Sobel+Laplacian']
+        return ['Variance of Sobel', 'Squared Gradient', 'Squared Sobel', 'FSWM', 'FFT', 'Mix Sobel', 'Sobel+Laplacian', 'combined_focus_measure', 'combined_focus_measure2']
 
     def set_metric(self, name):
         if name == 'Variance of Sobel':
@@ -29,7 +28,7 @@ class FocusMonitor:
             self.metric = 'fswm'
         elif name == 'FFT':
             self.metric = 'fft'
-        elif name == 'Mix Sobel':
+        elif name =='Mix Sobel':
             self.metric = 'mix_sobel'
         elif name == 'Wavelet':
             self.metric = 'wavelet'
@@ -37,8 +36,10 @@ class FocusMonitor:
             self.metric = 'sobel_laplacian'
         elif name == 'Sobel+Wavelet':
             self.metric = 'sobel_wavelet'
-        elif name == 'LPQ':
-            self.metric = 'LPQ'
+        elif name == 'combined_focus_measure':
+            self.metric = 'combined_focus_measure'
+        elif name == 'combined_focus_measure2':
+            self.metric = 'combined_focus_measure2'            
 
     def measure_focus(self, image_in):
         if self.metric == 'sobel':
@@ -57,11 +58,12 @@ class FocusMonitor:
             focus_value, focus_image = self.wavelet(image_in)
         elif self.metric == 'sobel_laplacian':
             focus_value, focus_image = self.sobel_laplacian(image_in)
-        elif self.metric == 'sobel_wavelet':
-            focus_value, focus_image = self.sobel_wavelet(image_in)
-        elif self.metric == 'LPQ':
-            focus_value, focus_image = self.lpq(image_in)
+        elif self.metric == 'combined_focus_measure2':
+            focus_value, focus_image = self.combined_focus_measure2(image_in)
+        elif self.metric == 'combined_focus_measure':
+            focus_value, focus_image = self.combined_focus_measure(image_in)
         return focus_value, focus_image
+
 
     def sobel(self, image_in):
         height, width, _ = image_in.shape
@@ -75,8 +77,8 @@ class FocusMonitor:
         sobel_image = cv2.Sobel(gray, ddepth=cv2.CV_16S, dx=1, dy=1, ksize=3)
         sobel_value = sobel_image[y0:y1, x0:x1].var()
         image_out = sobel_image[y0:y1, x0:x1]
-        # image_out = cv2.convertScaleAbs(sobel_image)
-        # image_out = cv2.cvtColor(image_out, cv2.COLOR_GRAY2RGB)
+        image_out = cv2.convertScaleAbs(sobel_image)
+        image_out = cv2.cvtColor(image_out, cv2.COLOR_GRAY2RGB)
 
         return sobel_value, image_out
 
@@ -133,17 +135,17 @@ class FocusMonitor:
         sobel_y = cv2.Sobel(gray_image, cv2.CV_64F, 0, 1, ksize=3)
         gradient_magnitude = np.sqrt(sobel_x ** 2 + sobel_y ** 2)
 
-        # np.var(smoothed_combined_gradient[yl:yh, xl:xh]) #+ np.mean(smoothed_combined_gradient[yl:yh, xl:xh])**1.5
-        focus_value = np.var(gradient_magnitude[y0:y1, x0:x1])
-
         signal = np.mean(gradient_magnitude[y0:y1, x0:x1])
         noise = np.std(gradient_magnitude[y0:y1, x0:x1])
         snr = signal/noise
 
+        # np.var(smoothed_combined_gradient[yl:yh, xl:xh]) #+ np.mean(smoothed_combined_gradient[yl:yh, xl:xh])**1.5
+        focus_value = np.var(gradient_magnitude[y0:y1, x0:x1])
+
         # normalized_image = cv2.normalize(gradient_magnitude, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         # image_out = cv2.convertScaleAbs(gradient_magnitude)
         # image_out = cv2.cvtColor(image_out, cv2.COLOR_GRAY2RGB)[y0:y1, x0:x1]
-
+        
         normalized_image = cv2.normalize(
             gradient_magnitude, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         image_out = cv2.cvtColor(normalized_image, cv2.COLOR_GRAY2RGB)[
@@ -194,18 +196,16 @@ class FocusMonitor:
         Y, X = np.ogrid[:rows, :cols]
         distance = np.sqrt((X - center_x)**2 + (Y - center_y)**2)
         max_distance = np.max(distance)
-        # Weights decrease with distance from center
-        weights = 1 - (distance / max_distance)
+        weights = 1 - (distance / max_distance)  # Weights decrease with distance from center
 
         # Compute the weighted mean
         weighted_bandpass = bandpass * weights
         focus_value = np.var(bandpass[y0:y1, x0:x1])
 
         # For visualization, normalize the weighted bandpass image
-        bandpass_normalized = cv2.normalize(
-            weighted_bandpass, None, 0, 255, cv2.NORM_MINMAX)
-        image_out = cv2.cvtColor(bandpass_normalized.astype(
-            np.uint8), cv2.COLOR_GRAY2RGB)[y0:y1, x0:x1]
+        bandpass_normalized = cv2.normalize(weighted_bandpass, None, 0, 255, cv2.NORM_MINMAX)
+        image_out = cv2.cvtColor(bandpass_normalized.astype(np.uint8), cv2.COLOR_GRAY2RGB)[y0:y1, x0:x1]
+
 
         return focus_value, image_out
 
@@ -246,32 +246,29 @@ class FocusMonitor:
         # normalized_spectrum = cv2.normalize(
         #     magnitude_spectrum, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         # image_out = cv2.cvtColor(normalized_spectrum, cv2.COLOR_GRAY2RGB)
-
+        
         gray = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
         # Apply a window function to reduce edge effects
-        window = np.hanning(gray.shape[0])[
-            :, None] * np.hanning(gray.shape[1])[None, :]
+        window = np.hanning(gray.shape[0])[:, None] * np.hanning(gray.shape[1])[None, :]
         gray_windowed = gray * window
         # Compute the FFT
         f = np.fft.fft2(gray_windowed)
         fshift = np.fft.fftshift(f)
         magnitude_spectrum = np.abs(fshift)
-
+        
         # Ground zero low frequencies
         center_y, center_x = magnitude_spectrum.shape[0] // 2, magnitude_spectrum.shape[1] // 2
-        low_freq_size = 10
+        low_freq_size = 10 
         magnitude_spectrum[center_y - low_freq_size:center_y + low_freq_size,
-                           center_x - low_freq_size:center_x + low_freq_size] = 0
+                    center_x - low_freq_size:center_x + low_freq_size] = 0
         # Focus measure: sum of magnitude spectrum values
         focus_value = np.var(magnitude_spectrum[y0:y1, x0:x1])
         magnitude_spectrum_log = 20 * np.log1p(magnitude_spectrum)
-        image_out = cv2.normalize(
-            magnitude_spectrum_log, None, 0, 255, cv2.NORM_MINMAX)
-        image_out = cv2.cvtColor(image_out.astype(
-            np.uint8), cv2.COLOR_GRAY2BGR)[y0:y1, x0:x1]
+        image_out = cv2.normalize(magnitude_spectrum_log, None, 0, 255, cv2.NORM_MINMAX)
+        image_out = cv2.cvtColor(image_out.astype(np.uint8), cv2.COLOR_GRAY2BGR)[y0:y1, x0:x1]
         return focus_value, image_out
-
-    def mix_sobel(self, image_in):
+    
+    def mix_sobel(self, image_in): 
         height, width, _ = image_in.shape
 
         x0 = int(self.cx*width - self.w/2)
@@ -286,13 +283,12 @@ class FocusMonitor:
         sobel_xy = cv2.Sobel(gray_image, cv2.CV_64F, 1, 1, ksize=3)
         combined_gradients = gradient_magnitude + np.abs(sobel_xy)
         focus_value = np.var(combined_gradients[y0:y1, x0:x1])
-
+        
         normalized_image = cv2.normalize(
             combined_gradients, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        image_out = cv2.cvtColor(normalized_image, cv2.COLOR_GRAY2RGB)[
-            y0:y1, x0:x1]
+        image_out = cv2.cvtColor(normalized_image, cv2.COLOR_GRAY2RGB)[y0:y1, x0:x1]
 
-        return focus_value, image_out
+        return focus_value, image_out        
 
     def sobel_laplacian(self, image_in):
         height, width, _ = image_in.shape
@@ -320,10 +316,8 @@ class FocusMonitor:
         focus_value = np.var(combined[y0:y1, x0:x1])
 
         # Normalize for visualization
-        normalized_image = cv2.normalize(
-            combined, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        image_out = cv2.cvtColor(normalized_image, cv2.COLOR_GRAY2RGB)[
-            y0:y1, x0:x1]
+        normalized_image = cv2.normalize(combined, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        image_out = cv2.cvtColor(normalized_image, cv2.COLOR_GRAY2RGB)[y0:y1, x0:x1]
         return focus_value, image_out
 
     def wavelet(self, image_in):
@@ -346,29 +340,22 @@ class FocusMonitor:
             cols -= 1
 
         # Perform single-level Haar wavelet transform manually
-        LL = (roi[0::2, 0::2] + roi[0::2, 1::2] +
-              roi[1::2, 0::2] + roi[1::2, 1::2]) / 4
-        LH = (roi[0::2, 0::2] - roi[0::2, 1::2] +
-              roi[1::2, 0::2] - roi[1::2, 1::2]) / 4
-        HL = (roi[0::2, 0::2] + roi[0::2, 1::2] -
-              roi[1::2, 0::2] - roi[1::2, 1::2]) / 4
-        HH = (roi[0::2, 0::2] - roi[0::2, 1::2] -
-              roi[1::2, 0::2] + roi[1::2, 1::2]) / 4
+        LL = (roi[0::2, 0::2] + roi[0::2, 1::2] + roi[1::2, 0::2] + roi[1::2, 1::2]) / 4
+        LH = (roi[0::2, 0::2] - roi[0::2, 1::2] + roi[1::2, 0::2] - roi[1::2, 1::2]) / 4
+        HL = (roi[0::2, 0::2] + roi[0::2, 1::2] - roi[1::2, 0::2] - roi[1::2, 1::2]) / 4
+        HH = (roi[0::2, 0::2] - roi[0::2, 1::2] - roi[1::2, 0::2] + roi[1::2, 1::2]) / 4
 
         # Calculate the energy of the high-frequency components
         high_freq = np.sqrt(LH**2 + HL**2 + HH**2 - LL**2)
         focus_value = np.mean(LH**2 + HL**2 + HH**2)
-        high_freq_resized = cv2.resize(
-            high_freq, (cols, rows), interpolation=cv2.INTER_LINEAR)
+        high_freq_resized = cv2.resize(high_freq, (cols, rows), interpolation=cv2.INTER_LINEAR)
 
         # Normalize the image for display
-        high_freq_normalized = cv2.normalize(
-            high_freq_resized, None, 0, 255, cv2.NORM_MINMAX)
-        image_out = cv2.cvtColor(high_freq_normalized.astype(
-            np.uint8), cv2.COLOR_GRAY2RGB)[y0:y1, x0:x1]
+        high_freq_normalized = cv2.normalize(high_freq_resized, None, 0, 255, cv2.NORM_MINMAX)
+        image_out = cv2.cvtColor(high_freq_normalized.astype(np.uint8), cv2.COLOR_GRAY2RGB)[y0:y1, x0:x1]
 
         return focus_value, image_out
-
+    
     def lpq(self, image_in):
         height, width, _ = image_in.shape
 
@@ -382,8 +369,9 @@ class FocusMonitor:
 
         # Parameters
         win_size = 7
-        rho = 0.95
-        STFTalpha = 1.0 / win_size
+        rho = 0.95 
+        STFTalpha = 1.0 / win_size 
+
 
         x = np.arange(-(win_size // 2), win_size // 2 + 1)
         wx = np.hamming(win_size)
@@ -393,14 +381,17 @@ class FocusMonitor:
         w1 = np.exp(-2j * np.pi * STFTalpha * X)
         w2 = np.exp(-2j * np.pi * STFTalpha * Y)
 
+
         filters = [
             w0,
             w1,
             w2,
-            w1 * w2
+            w1 * w2 
         ]
 
+
         LPQdesc = np.zeros(roi.shape, dtype=np.uint8)
+
 
         for i, filt in enumerate(filters[1:]):
             conv_real = cv2.filter2D(roi.astype(np.float32), -1, np.real(filt))
@@ -412,66 +403,78 @@ class FocusMonitor:
         hist, _ = np.histogram(LPQdesc.ravel(), bins=256, range=(0, 256))
         focus_value = entropy(hist + np.finfo(float).eps)
 
-        image_out = cv2.normalize(LPQdesc.astype(
-            np.float32), None, 0, 255, cv2.NORM_MINMAX)
-        image_out = cv2.cvtColor(
-            image_out.astype(np.uint8), cv2.COLOR_GRAY2RGB)
+        image_out = cv2.normalize(LPQdesc.astype(np.float32), None, 0, 255, cv2.NORM_MINMAX)
+        image_out = cv2.cvtColor(image_out.astype(np.uint8), cv2.COLOR_GRAY2RGB)
 
         return focus_value, image_out
-
-    def sobel_wavelet(self, image_in):
+    
+    def combined_focus_measure(self, image_in):
         height, width, _ = image_in.shape
 
+        x0 = int(self.cx*width - self.w/2)
+        y0 = int(self.cy*height - self.h/2)
+        x1 = int(self.cx*width + self.w/2)
+        y1 = int(self.cy*height + self.h/2)
+        gray_image = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
+
+        #sobel
+        sobel_x = cv2.Sobel(gray_image, cv2.CV_64F, 1, 0, ksize=3)
+        sobel_y = cv2.Sobel(gray_image, cv2.CV_64F, 0, 1, ksize=3)
+        gradient_magnitude = np.sqrt(sobel_x ** 2 + sobel_y ** 2)
+        sobel_xy = cv2.Sobel(gray_image, cv2.CV_64F, 1, 1, ksize=3)
+        combined_gradients = gradient_magnitude + np.abs(sobel_xy)
+        sobel_var = np.var(combined_gradients[y0:y1, x0:x1])
+
+        #fswm
+        sigma_low = 2.5
+        sigma_high = 3.0
+        blur_low = cv2.GaussianBlur(gray_image, (0, 0), sigmaX=sigma_low)
+        blur_high = cv2.GaussianBlur(gray_image, (0, 0), sigmaX=sigma_high)
+        bandpass = blur_low - blur_high        
+        fswm_var = np.var(bandpass[y0:y1, x0:x1]) 
+        
+        focus_value = sobel_var + 0.5*(fswm_var**0.75)
+        normalized_image = cv2.normalize(
+            combined_gradients, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        image_out = cv2.cvtColor(normalized_image, cv2.COLOR_GRAY2RGB)[y0:y1, x0:x1]
+
+        return focus_value, image_out 
+        
+    def combined_focus_measure2(self, image_in):
+        height, width, _ = image_in.shape
         x0 = int(self.cx * width - self.w / 2)
         y0 = int(self.cy * height - self.h / 2)
         x1 = int(self.cx * width + self.w / 2)
         y1 = int(self.cy * height + self.h / 2)
-
         gray_image = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
 
-        roi = gray_image[y0:y1, x0:x1]
+        #Sobel-based focus value
+        sobel_x = cv2.Sobel(gray_image, cv2.CV_64F, 1, 0, ksize=3)
+        sobel_y = cv2.Sobel(gray_image, cv2.CV_64F, 0, 1, ksize=3)
+        gradient_magnitude = np.sqrt(sobel_x ** 2 + sobel_y ** 2)
+        sobel_xy = cv2.Sobel(gray_image, cv2.CV_64F, 1, 1, ksize=3)
+        combined_gradients = gradient_magnitude + np.abs(sobel_xy)
+        sobel_var = np.var(combined_gradients[y0:y1, x0:x1])
 
-        rows, cols = roi.shape
-        if rows % 2 != 0:
-            roi = roi[:-1, :]
-            rows -= 1
-        if cols % 2 != 0:
-            roi = roi[:, :-1]
-            cols -= 1
+        #Compute FFT-based focus value
+        window = np.hanning(gray_image.shape[0])[:, None] * np.hanning(gray_image.shape[1])[None, :]
+        gray_windowed = gray_image * window
 
-        LH = (roi[0::2, 0::2] - roi[0::2, 1::2] +
-              roi[1::2, 0::2] - roi[1::2, 1::2]) / 4  # Horizontal
-        HL = (roi[0::2, 0::2] + roi[0::2, 1::2] -
-              roi[1::2, 0::2] - roi[1::2, 1::2]) / 4  # Vertical
-        HH = (roi[0::2, 0::2] - roi[0::2, 1::2] -
-              roi[1::2, 0::2] + roi[1::2, 1::2]) / 4  # Diagonal
+        f = np.fft.fft2(gray_windowed)
+        fshift = np.fft.fftshift(f)
+        magnitude_spectrum = np.abs(fshift)
 
-        # Combine the detail coefficients to get the high-frequency image
-        high_freq = np.sqrt(LH**2 + HL**2 + HH**2)
+        center_y, center_x = magnitude_spectrum.shape[0] // 2, magnitude_spectrum.shape[1] // 2
+        low_freq_size = 10 
+        magnitude_spectrum[center_y - low_freq_size:center_y + low_freq_size,
+                           center_x - low_freq_size:center_x + low_freq_size] = 0
 
-        # Resize high_freq to the original ROI size
-        high_freq_resized = cv2.resize(
-            high_freq, (cols, rows), interpolation=cv2.INTER_LINEAR)
+        fft_var = np.var(magnitude_spectrum[y0:y1, x0:x1])
 
-        # Apply Sobel filter to the ROI
-        sobel_x = cv2.Sobel(roi, cv2.CV_64F, 1, 0, ksize=3)
-        sobel_y = cv2.Sobel(roi, cv2.CV_64F, 0, 1, ksize=3)
-        sobel_magnitude = np.sqrt(sobel_x**2 + sobel_y**2)
+        focus_value = sobel_var + (0.5*fft_var/(1e5))
 
-        # Normalize the Sobel magnitude
-        sobel_normalized = cv2.normalize(
-            sobel_magnitude, None, 0, 1, cv2.NORM_MINMAX)
+        # magnitude_spectrum_log = 20 * np.log1p(magnitude_spectrum)
+        normalized_image = cv2.normalize(combined_gradients, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+        image_out = cv2.cvtColor(normalized_image, cv2.COLOR_GRAY2RGB)[y0:y1, x0:x1]
 
-        # Multiply the wavelet high-frequency image by the Sobel edge map
-        combined_high_freq = high_freq_resized * sobel_normalized
-
-        # Calculate the focus value as the variance of the combined image
-        focus_value = np.var(combined_high_freq)
-
-        # Normalize the image for display
-        combined_normalized = cv2.normalize(
-            combined_high_freq, None, 0, 255, cv2.NORM_MINMAX)
-        image_out = cv2.cvtColor(
-            combined_normalized.astype(np.uint8), cv2.COLOR_GRAY2RGB)
-
-        return focus_value, image_out
+        return focus_value, image_out 
