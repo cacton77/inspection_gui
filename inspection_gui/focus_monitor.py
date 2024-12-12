@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 from scipy.stats import entropy
+import cupy as cp
 
 class FocusMonitor:
 
@@ -415,29 +416,40 @@ class FocusMonitor:
         y0 = int(self.cy*height - self.h/2)
         x1 = int(self.cx*width + self.w/2)
         y1 = int(self.cy*height + self.h/2)
-        gray_image = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
+        gpu_image = cv2.cuda_GpuMat()
+        gpu_image.upload(image_in)
+        gray_image = cv2.cuda.cvtColor(gpu_image, cv2.COLOR_BGR2GRAY)
 
         #sobel
-        sobel_x = cv2.Sobel(gray_image, cv2.CV_64F, 1, 0, ksize=3)
-        sobel_y = cv2.Sobel(gray_image, cv2.CV_64F, 0, 1, ksize=3)
-        gradient_magnitude = np.sqrt(sobel_x ** 2 + sobel_y ** 2)
-        sobel_xy = cv2.Sobel(gray_image, cv2.CV_64F, 1, 1, ksize=3)
-        combined_gradients = gradient_magnitude + np.abs(sobel_xy)
-        sobel_var = np.var(combined_gradients[y0:y1, x0:x1])
+        sobel_x = cv2.cuda.Sobel(gray_image, cv2.CV_64F, 1, 0, ksize=3)
+        sobel_y = cv2.cuda.Sobel(gray_image, cv2.CV_64F, 0, 1, ksize=3)
+        sobel_xy = cv2.cuda.Sobel(gray_image, cv2.CV_64F, 1, 1, ksize=3)
+        
+        sobel_x_copy = cp.asarray(sobel_x.download())
+        sobel_y_copy = cp.asarray(sobel_y.download())
+        sobel_xy_copy = cp.asarray(sobel_xy.download())        
+        
+        gradient_magnitude = cp.sqrt(sobel_x_copy**2 + sobel_y_copy**2)
+        combined_gradients = gradient_magnitude + cp.abs(sobel_xy_copy)
+        sobel_var = cp.var(combined_gradients[y0:y1, x0:x1])
 
         #fswm
         sigma_low = 2.5
         sigma_high = 3.0
-        blur_low = cv2.GaussianBlur(gray_image, (0, 0), sigmaX=sigma_low)
-        blur_high = cv2.GaussianBlur(gray_image, (0, 0), sigmaX=sigma_high)
-        bandpass = blur_low - blur_high        
+        blur_low = cv2.cuda.GaussianBlur(gray_image, (0, 0), sigmaX=sigma_low)
+        blur_high = cv2.cuda.GaussianBlur(gray_image, (0, 0), sigmaX=sigma_high)
+        blur_low_copy = cp.asarray(blur_low.download())
+        blur_high_copy = cp.asarray(blur_high.download())
+        bandpass = blur_low_copy - blur_high_copy       
         fswm_var = np.var(bandpass[y0:y1, x0:x1]) 
         
         focus_value = sobel_var + 0.5*(fswm_var**0.75)
+        combined_cpu = cp.asnumpy(combined_gradients)
         normalized_image = cv2.normalize(
-            combined_gradients, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+            combined_cpu, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         image_out = cv2.cvtColor(normalized_image, cv2.COLOR_GRAY2RGB)[y0:y1, x0:x1]
-
+        focus_value = float(cp.asnumpy(focus_value))
+        
         return focus_value, image_out 
         
     def combined_focus_measure2(self, image_in):
