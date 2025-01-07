@@ -73,10 +73,12 @@ class FocusMonitor:
         x1 = int(self.cx*width + self.w/2)
         y1 = int(self.cy*height + self.h/2)
 
+        image_in = image_in[y0:y1, x0:x1]
+
         gray = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
         sobel_image = cv2.Sobel(gray, ddepth=cv2.CV_16S, dx=1, dy=1, ksize=3)
-        sobel_value = sobel_image[y0:y1, x0:x1].var()
-        image_out = sobel_image[y0:y1, x0:x1]
+        sobel_value = sobel_image.var()
+        image_out = sobel_image
         image_out = cv2.convertScaleAbs(sobel_image)
         image_out = cv2.cvtColor(image_out, cv2.COLOR_GRAY2RGB)
 
@@ -89,6 +91,8 @@ class FocusMonitor:
         y0 = int(self.cy*height - self.h/2)
         x1 = int(self.cx*width + self.w/2)
         y1 = int(self.cy*height + self.h/2)
+
+        image_in = image_in[y0:y1, x0:x1]
 
         # Convert to grayscale
         gray_image = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
@@ -108,15 +112,14 @@ class FocusMonitor:
         squared_gradient_x = squared_gradient_x[:min_height, :min_width]
         squared_gradient_y = squared_gradient_y[:min_height, :min_width]
 
-        # ((np.var(squared_gradient_x[y0:y1, x0:x1]) + np.mean(squared_gradient_y[y0:y1, x0:x1]))**1.5)/2
-        focus_value = np.var(squared_gradient_x[y0:y1, x0:x1])
+        # ((np.var(squared_gradient_x) + np.mean(squared_gradient_y))**1.5)/2
+        focus_value = np.var(squared_gradient_x)
 
         combined_gradient = np.sqrt(
             squared_gradient_x+squared_gradient_y).astype(np.float32)
         normalized_image = cv2.normalize(
             combined_gradient, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        image_out = cv2.cvtColor(normalized_image, cv2.COLOR_GRAY2RGB)[
-            y0:y1, x0:x1]
+        image_out = cv2.cvtColor(normalized_image, cv2.COLOR_GRAY2RGB)
 
         return focus_value, image_out
 
@@ -128,6 +131,8 @@ class FocusMonitor:
         x1 = int(self.cx*width + self.w/2)
         y1 = int(self.cy*height + self.h/2)
 
+        image_in = image_in[y0:y1, x0:x1]
+
         gray_image = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
 
         # Compute the squared differences of adjacent pixels in both directions using Sobel
@@ -135,21 +140,20 @@ class FocusMonitor:
         sobel_y = cv2.Sobel(gray_image, cv2.CV_64F, 0, 1, ksize=3)
         gradient_magnitude = np.sqrt(sobel_x ** 2 + sobel_y ** 2)
 
-        signal = np.mean(gradient_magnitude[y0:y1, x0:x1])
-        noise = np.std(gradient_magnitude[y0:y1, x0:x1])
+        signal = np.mean(gradient_magnitude)
+        noise = np.std(gradient_magnitude)
         snr = signal/noise
 
         # np.var(smoothed_combined_gradient[yl:yh, xl:xh]) #+ np.mean(smoothed_combined_gradient[yl:yh, xl:xh])**1.5
-        focus_value = np.var(gradient_magnitude[y0:y1, x0:x1])
+        focus_value = np.var(gradient_magnitude)
 
         # normalized_image = cv2.normalize(gradient_magnitude, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
         # image_out = cv2.convertScaleAbs(gradient_magnitude)
-        # image_out = cv2.cvtColor(image_out, cv2.COLOR_GRAY2RGB)[y0:y1, x0:x1]
+        # image_out = cv2.cvtColor(image_out, cv2.COLOR_GRAY2RGB)
 
         normalized_image = cv2.normalize(
             gradient_magnitude, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        image_out = cv2.cvtColor(normalized_image, cv2.COLOR_GRAY2RGB)[
-            y0:y1, x0:x1]
+        image_out = cv2.cvtColor(normalized_image, cv2.COLOR_GRAY2RGB)
         return focus_value, image_out
 
     def fswm(self, image_in):
@@ -159,6 +163,8 @@ class FocusMonitor:
         y0 = int(self.cy*height - self.h/2)
         x1 = int(self.cx*width + self.w/2)
         y1 = int(self.cy*height + self.h/2)
+
+        image_in = image_in[y0:y1, x0:x1]
 
         gray_image = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
         # ksize = 17
@@ -176,7 +182,7 @@ class FocusMonitor:
         # denoised_combined_fswm = cv2.GaussianBlur(
         #     combined_fswm, (0, 0), sigmaX=sigma, sigmaY=sigma)
 
-        # focus_value = np.var(denoised_combined_fswm[y0:y1, x0:x1])
+        # focus_value = np.var(denoised_combined_fswm)
 
         # normalized_image = cv2.normalize(
         #     denoised_combined_fswm, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
@@ -201,13 +207,13 @@ class FocusMonitor:
 
         # Compute the weighted mean
         weighted_bandpass = bandpass * weights
-        focus_value = np.var(bandpass[y0:y1, x0:x1])
+        focus_value = np.var(bandpass)
 
         # For visualization, normalize the weighted bandpass image
         bandpass_normalized = cv2.normalize(
             weighted_bandpass, None, 0, 255, cv2.NORM_MINMAX)
         image_out = cv2.cvtColor(bandpass_normalized.astype(
-            np.uint8), cv2.COLOR_GRAY2RGB)[y0:y1, x0:x1]
+            np.uint8), cv2.COLOR_GRAY2RGB)
 
         return focus_value, image_out
 
@@ -219,8 +225,10 @@ class FocusMonitor:
         x1 = int(self.cx*width + self.w/2)
         y1 = int(self.cy*height + self.h/2)
 
+        image_in = image_in[y0:y1, x0:x1]
+
         # # Convert the image to grayscale
-        # gray_image = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)[y0:y1, x0:x1]
+        # gray_image = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
         # size = 30
         # # Apply FFT to the entire grayscale image
         # f = np.fft.fft2(gray_image)
@@ -265,12 +273,12 @@ class FocusMonitor:
         magnitude_spectrum[center_y - low_freq_size:center_y + low_freq_size,
                            center_x - low_freq_size:center_x + low_freq_size] = 0
         # Focus measure: sum of magnitude spectrum values
-        focus_value = np.var(magnitude_spectrum[y0:y1, x0:x1])
+        focus_value = np.var(magnitude_spectrum)
         magnitude_spectrum_log = 20 * np.log1p(magnitude_spectrum)
         image_out = cv2.normalize(
             magnitude_spectrum_log, None, 0, 255, cv2.NORM_MINMAX)
         image_out = cv2.cvtColor(image_out.astype(
-            np.uint8), cv2.COLOR_GRAY2BGR)[y0:y1, x0:x1]
+            np.uint8), cv2.COLOR_GRAY2BGR)
         return focus_value, image_out
 
     def mix_sobel(self, image_in):
@@ -280,6 +288,9 @@ class FocusMonitor:
         y0 = int(self.cy*height - self.h/2)
         x1 = int(self.cx*width + self.w/2)
         y1 = int(self.cy*height + self.h/2)
+
+        image_in = image_in[y0:y1, x0:x1]
+
         gray_image = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
 
         sobel_x = cv2.Sobel(gray_image, cv2.CV_64F, 1, 0, ksize=3)
@@ -287,7 +298,7 @@ class FocusMonitor:
         gradient_magnitude = np.sqrt(sobel_x ** 2 + sobel_y ** 2)
         sobel_xy = cv2.Sobel(gray_image, cv2.CV_64F, 1, 1, ksize=3)
         combined_gradients = gradient_magnitude + np.abs(sobel_xy)
-        focus_value = np.var(combined_gradients[y0:y1, x0:x1])
+        focus_value = np.var(combined_gradients)
 
         normalized_image = cv2.normalize(
             combined_gradients, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
@@ -304,6 +315,8 @@ class FocusMonitor:
         x1 = int(self.cx * width + self.w / 2)
         y1 = int(self.cy * height + self.h / 2)
 
+        image_in = image_in[y0:y1, x0:x1]
+
         # Convert to grayscale
         gray = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
 
@@ -319,7 +332,7 @@ class FocusMonitor:
         combined = sobel_magnitude + np.abs(laplacian)
 
         # Compute focus value
-        focus_value = np.var(combined[y0:y1, x0:x1])
+        focus_value = np.var(combined)
 
         # Normalize for visualization
         normalized_image = cv2.normalize(
@@ -336,8 +349,10 @@ class FocusMonitor:
         x1 = int(self.cx * width + self.w / 2)
         y1 = int(self.cy * height + self.h / 2)
 
+        image_in = image_in[y0:y1, x0:x1]
+
         gray_image = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
-        roi = gray_image[y0:y1, x0:x1]
+        roi = gray_image
 
         rows, cols = roi.shape
         if rows % 2 != 0:
@@ -367,7 +382,7 @@ class FocusMonitor:
         high_freq_normalized = cv2.normalize(
             high_freq_resized, None, 0, 255, cv2.NORM_MINMAX)
         image_out = cv2.cvtColor(high_freq_normalized.astype(
-            np.uint8), cv2.COLOR_GRAY2RGB)[y0:y1, x0:x1]
+            np.uint8), cv2.COLOR_GRAY2RGB)
 
         return focus_value, image_out
 
@@ -379,8 +394,10 @@ class FocusMonitor:
         x1 = int(self.cx * width + self.w / 2)
         y1 = int(self.cy * height + self.h / 2)
 
+        image_in = image_in[y0:y1, x0:x1]
+
         gray_image = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
-        roi = gray_image[y0:y1, x0:x1]
+        roi = gray_image
 
         # Parameters
         win_size = 7
@@ -428,6 +445,9 @@ class FocusMonitor:
         y0 = int(self.cy*height - self.h/2)
         x1 = int(self.cx*width + self.w/2)
         y1 = int(self.cy*height + self.h/2)
+
+        image_in = image_in[y0:y1, x0:x1]
+
         gray_image = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
 
         # sobel
@@ -436,7 +456,7 @@ class FocusMonitor:
         gradient_magnitude = np.sqrt(sobel_x ** 2 + sobel_y ** 2)
         sobel_xy = cv2.Sobel(gray_image, cv2.CV_64F, 1, 1, ksize=3)
         combined_gradients = gradient_magnitude + np.abs(sobel_xy)
-        sobel_var = np.var(combined_gradients[y0:y1, x0:x1])
+        sobel_var = np.var(combined_gradients)
 
         # fswm
         sigma_low = 2.5
@@ -444,7 +464,7 @@ class FocusMonitor:
         blur_low = cv2.GaussianBlur(gray_image, (0, 0), sigmaX=sigma_low)
         blur_high = cv2.GaussianBlur(gray_image, (0, 0), sigmaX=sigma_high)
         bandpass = blur_low - blur_high
-        fswm_var = np.var(bandpass[y0:y1, x0:x1])
+        fswm_var = np.var(bandpass)
 
         focus_value = sobel_var + 0.5*(fswm_var**0.75)
         normalized_image = cv2.normalize(
@@ -460,6 +480,9 @@ class FocusMonitor:
         y0 = int(self.cy * height - self.h / 2)
         x1 = int(self.cx * width + self.w / 2)
         y1 = int(self.cy * height + self.h / 2)
+
+        image_in = image_in[y0:y1, x0:x1]
+
         gray_image = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
 
         # Sobel-based focus value
@@ -468,7 +491,7 @@ class FocusMonitor:
         gradient_magnitude = np.sqrt(sobel_x ** 2 + sobel_y ** 2)
         sobel_xy = cv2.Sobel(gray_image, cv2.CV_64F, 1, 1, ksize=3)
         combined_gradients = gradient_magnitude + np.abs(sobel_xy)
-        sobel_var = np.var(combined_gradients[y0:y1, x0:x1])
+        sobel_var = np.var(combined_gradients)
 
         # Compute FFT-based focus value
         window = np.hanning(gray_image.shape[0])[
@@ -484,7 +507,7 @@ class FocusMonitor:
         magnitude_spectrum[center_y - low_freq_size:center_y + low_freq_size,
                            center_x - low_freq_size:center_x + low_freq_size] = 0
 
-        fft_var = np.var(magnitude_spectrum[y0:y1, x0:x1])
+        fft_var = np.var(magnitude_spectrum)
 
         focus_value = sobel_var + (0.5*fft_var/(1e5))
 
