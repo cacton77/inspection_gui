@@ -18,6 +18,7 @@ class PlottingThread():
 
         # Light Map
         self.update_light_map_flag = True
+
         self.light_map_image_cv2 = np.zeros((100, 100, 3))
 
         # Depth Image
@@ -74,7 +75,7 @@ class PlottingThread():
 
     def stop_measure(self):
         t1 = time.time()
-        print(f'Plotting Thread: {t1-self.t0:.2f} seconds')
+        # print(f'Plotting Thread: {t1-self.t0:.2f} seconds')
 
     def update_plots(self):
         while not self.stopped:

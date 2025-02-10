@@ -41,6 +41,9 @@ class FocusMonitor:
             self.metric = 'combined_focus_measure'
         elif name == 'combined_focus_measure2':
             self.metric = 'combined_focus_measure2'
+        else:
+            return False
+        return True
 
     def measure_focus(self, image_in):
         if self.metric == 'sobel':

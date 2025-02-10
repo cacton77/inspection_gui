@@ -24,10 +24,13 @@ from rcl_interfaces.srv import ListParameters, DescribeParameters, GetParameters
 from inspection_gui.threads.tf2_message_filter import Tf2MessageFilter
 from inspection_gui.focus_monitor import FocusMonitor
 from inspection_msgs.msg import PixelStrip, FocusValue
-from inspection_srvs.srv import CaptureImage
-from inspection_srvs.srv import MoveToPose
-from std_msgs.msg import Float64, ColorRGBA
+from inspection_srvs.srv import CaptureImage, MoveToPose, SetFocusMetric
+from std_msgs.msg import Float64, ColorRGBA, String
 from std_srvs.srv import Trigger
+
+TELEOP = 0
+DYNAMIC_AUTOFOCUS = 1
+HILLCLIMB_AUTOFOCUS = 2
 
 
 class RosThread(Node):
@@ -69,6 +72,8 @@ class RosThread(Node):
 
         # MACRO CAMERA ####################################################################
 
+        self.camera_frame_tf = np.eye(4)
+
         macro_camera_cb_group = MutuallyExclusiveCallbackGroup()
 
         self.focus_monitor = FocusMonitor(0.5, 0.5, 300, 300, 'sobel')
@@ -83,11 +88,52 @@ class RosThread(Node):
         self.focus_metric_dict['metrics']['sobel']['image'] = np.zeros(
             (200, 200))
 
+        # Create a blank image
+        height, width = 400, 800
+        image = np.ones((height, width, 3), dtype=np.uint8) * 255
+
+        # Define the bounding box
+        bbox_top_left = (50, 50)
+        bbox_bottom_right = (750, 350)
+        cv2.rectangle(image, bbox_top_left, bbox_bottom_right, (0, 0, 0), 2)
+        self.focus_metric_dict['plot'] = image
+
         image_topic = '/image_raw/compressed'
         image_sub = self.create_subscription(
             CompressedImage, image_topic, self.compressed_image_callback, 10, callback_group=macro_camera_cb_group)
 
         # FOCUS #########################################################################
+
+        self.focus_state = TELEOP
+        focus_cb_group = MutuallyExclusiveCallbackGroup()
+
+        self.focus_data_dict = {}
+        self.ema_focus_value = 0
+        self.ema_focus_value2 = 0
+        self.dema_focus_value = 0
+        self.previous_dema_focus_value = 0
+        self.ratio = 0
+        self.dFV = 0  # computed using dema_focus_value
+        self.smooth_ddFV = 0  # computed using dema_focus_value
+        self.previous_dFV = 0
+        self.keys = None
+        self.max_pose = Pose()
+
+        def change_metric_callback(request, response):
+            success = self.focus_monitor.set_metric(request.metric_name)
+            print(f'Success: {success}')
+            response.success = success
+            return response
+
+        def auto_focus_callback(request, response):
+            response.success = True
+            return response
+
+        self.change_metric_service = self.create_service(
+            SetFocusMetric, '/set_focus_metric', change_metric_callback, callback_group=focus_cb_group)
+
+        self.auto_focus_service = self.create_service(Trigger, '/auto_focus', auto_focus_callback,
+                                                      callback_group=focus_cb_group)
 
         self.filtered_focus_value = 0.0
         self.focus_value_alpha = 0.5
@@ -259,6 +305,8 @@ class RosThread(Node):
 
         # SERVO #########################################################################
 
+        self.servo_state = TELEOP
+
         servo_cb_group = MutuallyExclusiveCallbackGroup()
 
         self.m = 5
@@ -345,6 +393,12 @@ class RosThread(Node):
 
     def move_to_pose(self, tf, frame_id):
         self.moving_to_viewpoint = True
+
+        # tf is for the camera frame. Find tf for tool0.
+        T_sc = tf
+        T_ct = np.linalg.inv(self.camera_frame_tf)
+        T_st = np.dot(T_sc, T_ct)
+        tf = T_st
 
         # Turn homogeneous tf into position and quaternion
         pose_stamped = PoseStamped()
@@ -519,75 +573,81 @@ class RosThread(Node):
         self.zoom_goal = self.zoom_pos + zoom_vel
 
     def twist_pub_timer_callback(self):
-        # Do not publish if all twist values are zero
-        px0 = self.pan_pos[0]
-        gx = self.pan_goal[0]
-        vx0 = self.pan_vel[0]
-        ax = (self.k_p * (gx - px0) - self.c_p * vx0) / self.m
-        vx1 = vx0 + ax * self.twist_pub_timer_period
-        if abs(vx1) < 0.01:
-            vx1 = 0.0
-        elif vx1 > 0.0:
-            vx1 = min(round(vx1, 3), self.pan_vel_max[0])
-        else:
-            vx1 = max(round(vx1, 3), -self.pan_vel_max[0])
-        px1 = px0 + vx1 * self.twist_pub_timer_period
+        if self.servo_state == TELEOP:
+            pass
+        elif self.servo_state == DYNAMIC_AUTOFOCUS:
+            pass
+        elif self.servo_state == HILLCLIMB_AUTOFOCUS:
+            pass
+        # # Do not publish if all twist values are zero
+        # px0 = self.pan_pos[0]
+        # gx = self.pan_goal[0]
+        # vx0 = self.pan_vel[0]
+        # ax = (self.k_p * (gx - px0) - self.c_p * vx0) / self.m
+        # vx1 = vx0 + ax * self.twist_pub_timer_period
+        # if abs(vx1) < 0.01:
+        #     vx1 = 0.0
+        # elif vx1 > 0.0:
+        #     vx1 = min(round(vx1, 3), self.pan_vel_max[0])
+        # else:
+        #     vx1 = max(round(vx1, 3), -self.pan_vel_max[0])
+        # px1 = px0 + vx1 * self.twist_pub_timer_period
 
-        py0 = self.pan_pos[1]
-        gy = self.pan_goal[1]
-        vy0 = self.pan_vel[1]
-        ay = (self.k_p * (gy - py0) - self.c_p * vy0) / self.m
-        vy1 = vy0 + ay * self.twist_pub_timer_period
-        if abs(vy1) < 0.01:
-            vy1 = 0.0
-        elif vy1 > 0.0:
-            vy1 = min(round(vy1, 3), self.pan_vel_max[1])
-        else:
-            vy1 = max(round(vy1, 3), -self.pan_vel_max[1])
-        py1 = py0 + vy1 * self.twist_pub_timer_period
+        # py0 = self.pan_pos[1]
+        # gy = self.pan_goal[1]
+        # vy0 = self.pan_vel[1]
+        # ay = (self.k_p * (gy - py0) - self.c_p * vy0) / self.m
+        # vy1 = vy0 + ay * self.twist_pub_timer_period
+        # if abs(vy1) < 0.01:
+        #     vy1 = 0.0
+        # elif vy1 > 0.0:
+        #     vy1 = min(round(vy1, 3), self.pan_vel_max[1])
+        # else:
+        #     vy1 = max(round(vy1, 3), -self.pan_vel_max[1])
+        # py1 = py0 + vy1 * self.twist_pub_timer_period
 
-        py1 = round(py1, 3)
+        # py1 = round(py1, 3)
 
-        pz0 = self.zoom_pos
-        gz = self.zoom_goal
-        vz0 = self.zoom_vel
-        az = (self.k_p * (gz - pz0) - self.c_p * vz0) / self.m
-        vz1 = vz0 + az * self.twist_pub_timer_period
-        if abs(vz1) < 0.01:
-            vz1 = 0.0
-        elif vz1 > 0.0:
-            vz1 = min(round(vz1, 3), self.zoom_vel_max)
-        else:
-            vz1 = max(round(vz1, 3), -self.zoom_vel_max)
-        pz1 = pz0 + vz1 * self.twist_pub_timer_period
-        # Round to 3 decimal places
+        # pz0 = self.zoom_pos
+        # gz = self.zoom_goal
+        # vz0 = self.zoom_vel
+        # az = (self.k_p * (gz - pz0) - self.c_p * vz0) / self.m
+        # vz1 = vz0 + az * self.twist_pub_timer_period
+        # if abs(vz1) < 0.01:
+        #     vz1 = 0.0
+        # elif vz1 > 0.0:
+        #     vz1 = min(round(vz1, 3), self.zoom_vel_max)
+        # else:
+        #     vz1 = max(round(vz1, 3), -self.zoom_vel_max)
+        # pz1 = pz0 + vz1 * self.twist_pub_timer_period
+        # # Round to 3 decimal places
 
-        px1 = round(px1, 3)
-        py1 = round(py1, 3)
-        pz1 = round(pz1, 3)
+        # px1 = round(px1, 3)
+        # py1 = round(py1, 3)
+        # pz1 = round(pz1, 3)
 
-        self.pan_pos = (px1, py1)
-        self.pan_vel = (vx1, vy1)
+        # self.pan_pos = (px1, py1)
+        # self.pan_vel = (vx1, vy1)
 
-        self.zoom_pos = pz1
-        self.zoom_vel = vz1
-        self.zoom_goal = pz1
+        # self.zoom_pos = pz1
+        # self.zoom_vel = vz1
+        # self.zoom_goal = pz1
 
-        if abs(vx1) < 0.25:
-            vx1 = 0.0
-        if abs(vy1) < 0.25:
-            vy1 = 0.0
-        if abs(vz1) < 0.25:
-            vz1 = 0.0
+        # if abs(vx1) < 0.25:
+        #     vx1 = 0.0
+        # if abs(vy1) < 0.25:
+        #     vy1 = 0.0
+        # if abs(vz1) < 0.25:
+        #     vz1 = 0.0
 
-        # Publish twist if any values are non-zero
-        if vx1 != 0.0 or vy1 != 0.0 or vz1 != 0.0:
-            self.twist.twist.linear.x = -vx1
-            self.twist.twist.linear.y = vz1
-            self.twist.twist.linear.z = vy1
+        # # Publish twist if any values are non-zero
+        # if vx1 != 0.0 or vy1 != 0.0 or vz1 != 0.0:
+        #     self.twist.twist.linear.x = -vx1
+        #     self.twist.twist.linear.y = vz1
+        #     self.twist.twist.linear.z = vy1
 
-            self.twist.header.stamp = self.get_clock().now().to_msg()
-            self.twist_pub.publish(self.twist)
+        self.twist.header.stamp = self.get_clock().now().to_msg()
+        self.twist_pub.publish(self.twist)
 
     def generate_point_cloud(self):
         new_pcd = o3d.geometry.PointCloud()
@@ -707,6 +767,32 @@ class RosThread(Node):
         # Publish focus value
         self.focus_pub.publish(FocusValue(
             header=msg.header, metric=self.focus_monitor.metric, data=self.filtered_focus_value, raw_data=focus_value))
+
+        # Generate random data
+        data = np.random.randint(0, 100, 100)
+
+        # Create a blank image
+        height, width = 400, 800
+        image = np.ones((height, width, 3), dtype=np.uint8) * 255
+
+        # Define the bounding box
+        bbox_top_left = (50, 50)
+        bbox_bottom_right = (750, 350)
+        cv2.rectangle(image, bbox_top_left,
+                      bbox_bottom_right, (0, 0, 0), 2)
+
+        # Plot the data as vertical bars
+        bar_width = (bbox_bottom_right[0] - bbox_top_left[0]) // len(data)
+        for i, value in enumerate(data):
+            x1 = bbox_top_left[0] + i * bar_width
+            y1 = bbox_bottom_right[1] - \
+                int((bbox_bottom_right[1] -
+                    bbox_top_left[1]) * (value / 100))
+            x2 = x1 + bar_width - 1
+            y2 = bbox_bottom_right[1]
+            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 0, 0), -1)
+
+        self.focus_metric_dict['plot'] = image
 
         # self.focus_metric_dict['sobel']['buffer'].append(metrics.)
 

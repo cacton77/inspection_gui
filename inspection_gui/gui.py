@@ -521,6 +521,7 @@ class MyGui():
 
         self.tf_part_to_world = T
 
+        self.ros_thread.camera_frame_tf = T
         self.ros_thread.send_transform(
             self.tf_part_to_world, self.part_frame_parent, self.part_frame)
 
@@ -2250,6 +2251,7 @@ class MyGui():
             'metrics']['sobel']['raw_value']
         focus_metric_time = self.ros_thread.focus_metric_dict['metrics']['sobel']['time']
         focus_metric_image = self.ros_thread.focus_metric_dict['metrics']['sobel']['image']
+        focus_plot = self.ros_thread.focus_metric_dict['plot']
 
         self.plotting_data['depth_image'] = depth_image
         self.plotting_data['focus_metric_time'] = focus_metric_time
@@ -2258,7 +2260,7 @@ class MyGui():
         self.plotting_data['focus_metric_image'] = focus_metric_image
 
         t0 = time.time()
-        self.plotting_pipe.send(self.plotting_data)
+        # self.plotting_pipe.send(self.plotting_data)
 
         # t0 = time.time()
         # plotting_results = self.plotting_pipe.recv()
@@ -2272,12 +2274,7 @@ class MyGui():
         depth_image_cv2 = np.ndarray(
             depth_image_cv2_shape, dtype=np.uint8, buffer=shm.buf)
 
-        shm = shared_memory.SharedMemory(name='focus_plot')
-        shared_array = np.ndarray(
-            focus_metric_plot_cv2_shape, dtype=np.uint8, buffer=shm.buf)
-        focus_metric_plot_cv2 = np.zeros(
-            focus_metric_plot_cv2_shape, dtype=np.uint8)
-        np.copyto(focus_metric_plot_cv2, shared_array)
+        focus_metric_plot_cv2 = focus_plot
 
         shm = shared_memory.SharedMemory(name='focus_image')
         focus_metric_image_cv2 = np.ndarray(
@@ -2286,7 +2283,7 @@ class MyGui():
         #     focus_metric_image_cv2_shape, dtype=np.uint8)
         # np.copyto(focus_metric_image_cv2, shared_array)
         t1 = time.time()
-        print(f"Plotting receive Time: {t1-t0}")
+        # print(f"Plotting receive Time: {t1-t0}")
 
         # Get data from ReconstructThread
         live_point_cloud = self.reconstruct_thread.live_point_cloud
