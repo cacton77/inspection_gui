@@ -81,6 +81,8 @@ class RosThread(Node):
         # TF2 #########################################################################
 
         self.tfBuffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tfBuffer, self)
+        self.get_tf_frames()
         self.staticTfBroadcaster = tf2_ros.StaticTransformBroadcaster(self)
 
         # MACRO CAMERA ####################################################################
@@ -90,7 +92,7 @@ class RosThread(Node):
         macro_camera_cb_group = MutuallyExclusiveCallbackGroup()
 
         self.focus_monitor = FocusMonitor(0.5, 0.5, 300, 300, 'sobel')
-        macro_image = np.zeros((576, 1024, 3), dtype=np.uint8)
+        self.macro_image = np.zeros((576, 1024, 3), dtype=np.uint8)
 
         image_topic = '/image_raw/compressed'
         image_sub = self.create_subscription(
@@ -811,21 +813,21 @@ class RosThread(Node):
     def save_focus_data(self, file_path):
         self.servo_state = SAVING_DATA
 
+        # Copy the dictionary to a new dictionary
+        autofocus_data_dict = self.autofocus_data_dict.copy()
+
         # Remove image and focus_image from dictionary
-        images = self.autofocus_data_dict.pop('image')
-        focus_images = self.autofocus_data_dict.pop('focus_image')
-        plot = self.autofocus_data_dict.pop('plot')
+        images = autofocus_data_dict.pop('image')
+        focus_images = autofocus_data_dict.pop('focus_image')
+        plot = autofocus_data_dict.pop('plot')
         # Save the dictionary to a file
         with open(file_path + 'data.json', 'w') as f:
-            json.dump(self.autofocus_data_dict, f)
+            json.dump(autofocus_data_dict, f)
         # Restore image and focus_image to dictionary
-        self.autofocus_data_dict['image'] = images
-        self.autofocus_data_dict['focus_image'] = focus_images
         # Save images to video
         out = cv2.VideoWriter(file_path + 'focus_data.avi', cv2.VideoWriter_fourcc(
             'M', 'J', 'P', 'G'), 10, (images[0].shape[1], images[0].shape[0]))
         for i in range(len(images)):
-            print(np.max(images[i]))
             out.write(images[i])
         out.release()
 
@@ -851,7 +853,7 @@ class RosThread(Node):
         x1 = int(cx*width + w/2)
         y1 = int(cy*height + h/2)
 
-        focus_value, focus_image = self.focus_monitor.measure_focus(
+        focus_value, focus_image, cropped_image = self.focus_monitor.measure_focus(
             macro_image)
 
         self.filtered_focus_value = self.focus_value_alpha * focus_value + \
@@ -868,15 +870,13 @@ class RosThread(Node):
         try:
             # Attempt to get the transform at the exact requested time
             tf_wt = self.tfBuffer.lookup_transform(
-                'world', 'tool0', msg_time)
+                'world', 'tool0', msg_time, rclpy.time.Duration(seconds=1.0))
             position = (tf_wt.transform.translation.x,
                         tf_wt.transform.translation.y, tf_wt.transform.translation.z)
-
         except tf2_ros.TransformException as ex:
             # Fallback to the latest available transform within a 1-second duration
-            pass
-            # tf_wt = self.tfBuffer.lookup_transform(
-            # 'world', 'tool0', rclpy.time.Time(), rclpy.time.Duration(seconds=1.0))
+            tf_wt = self.tfBuffer.lookup_transform(
+                'world', 'tool0', rclpy.time.Time(), rclpy.time.Duration(seconds=1.0))
 
         # Get velocity based on servo state
         if self.servo_state == DYNAMIC_AUTOFOCUS:
@@ -931,7 +931,7 @@ class RosThread(Node):
         self.autofocus_data_dict['focus_value_ema2'].append(focus_value_ema2)
         self.autofocus_data_dict['focus_value_dema'].append(focus_value_dema)
         self.autofocus_data_dict['focus_value'].append(focus_value)
-        self.autofocus_data_dict['image'].append(focus_image)
+        self.autofocus_data_dict['image'].append(cropped_image)
         self.autofocus_data_dict['focus_image'].append(focus_image)
         self.autofocus_data_dict['position'].append(position)
         self.autofocus_data_dict['velocity'].append(velocity)
@@ -940,8 +940,6 @@ class RosThread(Node):
 
         cv2.rectangle(macro_image, (x0, y0), (x1, y1),
                       color=(255, 255, 255), thickness=4)
-
-        print(len(self.autofocus_data_dict['image']))
 
         self.macro_image = macro_image
 

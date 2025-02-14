@@ -46,6 +46,15 @@ class FocusMonitor:
         return True
 
     def measure_focus(self, image_in):
+        height, width, _ = image_in.shape
+
+        x0 = int(self.cx*width - self.w/2)
+        y0 = int(self.cy*height - self.h/2)
+        x1 = int(self.cx*width + self.w/2)
+        y1 = int(self.cy*height + self.h/2)
+
+        image_in = image_in[y0:y1, x0:x1]
+
         if self.metric == 'sobel':
             focus_value, focus_image = self.sobel(image_in)
         elif self.metric == 'squared_gradient':
@@ -66,17 +75,9 @@ class FocusMonitor:
             focus_value, focus_image = self.combined_focus_measure2(image_in)
         elif self.metric == 'combined_focus_measure':
             focus_value, focus_image = self.combined_focus_measure(image_in)
-        return focus_value, focus_image
+        return focus_value, focus_image, image_in
 
     def sobel(self, image_in):
-        height, width, _ = image_in.shape
-
-        x0 = int(self.cx*width - self.w/2)
-        y0 = int(self.cy*height - self.h/2)
-        x1 = int(self.cx*width + self.w/2)
-        y1 = int(self.cy*height + self.h/2)
-
-        image_in = image_in[y0:y1, x0:x1]
 
         gray = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
         sobel_image = cv2.Sobel(gray, ddepth=cv2.CV_16S, dx=1, dy=1, ksize=3)
@@ -88,15 +89,6 @@ class FocusMonitor:
         return sobel_value, image_out
 
     def squared_gradient(self, image_in):
-        height, width, _ = image_in.shape
-
-        x0 = int(self.cx*width - self.w/2)
-        y0 = int(self.cy*height - self.h/2)
-        x1 = int(self.cx*width + self.w/2)
-        y1 = int(self.cy*height + self.h/2)
-
-        image_in = image_in[y0:y1, x0:x1]
-
         # Convert to grayscale
         gray_image = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
 
@@ -127,15 +119,6 @@ class FocusMonitor:
         return focus_value, image_out
 
     def squared_sobel(self, image_in):
-        height, width, _ = image_in.shape
-
-        x0 = int(self.cx*width - self.w/2)
-        y0 = int(self.cy*height - self.h/2)
-        x1 = int(self.cx*width + self.w/2)
-        y1 = int(self.cy*height + self.h/2)
-
-        image_in = image_in[y0:y1, x0:x1]
-
         gray_image = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
 
         # Compute the squared differences of adjacent pixels in both directions using Sobel
@@ -160,15 +143,6 @@ class FocusMonitor:
         return focus_value, image_out
 
     def fswm(self, image_in):
-        height, width, _ = image_in.shape
-
-        x0 = int(self.cx*width - self.w/2)
-        y0 = int(self.cy*height - self.h/2)
-        x1 = int(self.cx*width + self.w/2)
-        y1 = int(self.cy*height + self.h/2)
-
-        image_in = image_in[y0:y1, x0:x1]
-
         gray_image = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
         # ksize = 17
         # sigma = 1.5
@@ -221,15 +195,6 @@ class FocusMonitor:
         return focus_value, image_out
 
     def fft(self, image_in):
-        height, width, _ = image_in.shape
-
-        x0 = int(self.cx*width - self.w/2)
-        y0 = int(self.cy*height - self.h/2)
-        x1 = int(self.cx*width + self.w/2)
-        y1 = int(self.cy*height + self.h/2)
-
-        image_in = image_in[y0:y1, x0:x1]
-
         # # Convert the image to grayscale
         # gray_image = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
         # size = 30
@@ -285,15 +250,6 @@ class FocusMonitor:
         return focus_value, image_out
 
     def mix_sobel(self, image_in):
-        height, width, _ = image_in.shape
-
-        x0 = int(self.cx*width - self.w/2)
-        y0 = int(self.cy*height - self.h/2)
-        x1 = int(self.cx*width + self.w/2)
-        y1 = int(self.cy*height + self.h/2)
-
-        image_in = image_in[y0:y1, x0:x1]
-
         gray_image = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
 
         sobel_x = cv2.Sobel(gray_image, cv2.CV_64F, 1, 0, ksize=3)
@@ -305,21 +261,11 @@ class FocusMonitor:
 
         normalized_image = cv2.normalize(
             combined_gradients, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        image_out = cv2.cvtColor(normalized_image, cv2.COLOR_GRAY2RGB)[
-            y0:y1, x0:x1]
+        image_out = cv2.cvtColor(normalized_image, cv2.COLOR_GRAY2RGB)
 
         return focus_value, image_out
 
     def sobel_laplacian(self, image_in):
-        height, width, _ = image_in.shape
-
-        x0 = int(self.cx * width - self.w / 2)
-        y0 = int(self.cy * height - self.h / 2)
-        x1 = int(self.cx * width + self.w / 2)
-        y1 = int(self.cy * height + self.h / 2)
-
-        image_in = image_in[y0:y1, x0:x1]
-
         # Convert to grayscale
         gray = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
 
@@ -340,20 +286,11 @@ class FocusMonitor:
         # Normalize for visualization
         normalized_image = cv2.normalize(
             combined, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        image_out = cv2.cvtColor(normalized_image, cv2.COLOR_GRAY2RGB)[
-            y0:y1, x0:x1]
+        image_out = cv2.cvtColor(normalized_image, cv2.COLOR_GRAY2RGB)
+
         return focus_value, image_out
 
     def wavelet(self, image_in):
-        height, width, _ = image_in.shape
-
-        x0 = int(self.cx * width - self.w / 2)
-        y0 = int(self.cy * height - self.h / 2)
-        x1 = int(self.cx * width + self.w / 2)
-        y1 = int(self.cy * height + self.h / 2)
-
-        image_in = image_in[y0:y1, x0:x1]
-
         gray_image = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
         roi = gray_image
 
@@ -390,15 +327,6 @@ class FocusMonitor:
         return focus_value, image_out
 
     def lpq(self, image_in):
-        height, width, _ = image_in.shape
-
-        x0 = int(self.cx * width - self.w / 2)
-        y0 = int(self.cy * height - self.h / 2)
-        x1 = int(self.cx * width + self.w / 2)
-        y1 = int(self.cy * height + self.h / 2)
-
-        image_in = image_in[y0:y1, x0:x1]
-
         gray_image = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
         roi = gray_image
 
@@ -442,15 +370,6 @@ class FocusMonitor:
         return focus_value, image_out
 
     def combined_focus_measure(self, image_in):
-        height, width, _ = image_in.shape
-
-        x0 = int(self.cx*width - self.w/2)
-        y0 = int(self.cy*height - self.h/2)
-        x1 = int(self.cx*width + self.w/2)
-        y1 = int(self.cy*height + self.h/2)
-
-        image_in = image_in[y0:y1, x0:x1]
-
         gray_image = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
 
         # sobel
@@ -472,20 +391,11 @@ class FocusMonitor:
         focus_value = sobel_var + 0.5*(fswm_var**0.75)
         normalized_image = cv2.normalize(
             combined_gradients, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        image_out = cv2.cvtColor(normalized_image, cv2.COLOR_GRAY2RGB)[
-            y0:y1, x0:x1]
+        image_out = cv2.cvtColor(normalized_image, cv2.COLOR_GRAY2RGB)
 
         return focus_value, image_out
 
     def combined_focus_measure2(self, image_in):
-        height, width, _ = image_in.shape
-        x0 = int(self.cx * width - self.w / 2)
-        y0 = int(self.cy * height - self.h / 2)
-        x1 = int(self.cx * width + self.w / 2)
-        y1 = int(self.cy * height + self.h / 2)
-
-        image_in = image_in[y0:y1, x0:x1]
-
         gray_image = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
 
         # Sobel-based focus value
@@ -517,7 +427,6 @@ class FocusMonitor:
         # magnitude_spectrum_log = 20 * np.log1p(magnitude_spectrum)
         normalized_image = cv2.normalize(
             combined_gradients, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-        image_out = cv2.cvtColor(normalized_image, cv2.COLOR_GRAY2RGB)[
-            y0:y1, x0:x1]
+        image_out = cv2.cvtColor(normalized_image, cv2.COLOR_GRAY2RGB)
 
         return focus_value, image_out
