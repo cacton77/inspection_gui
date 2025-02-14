@@ -4,6 +4,7 @@ from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 
+import json
 import cv2  # OpenCV library
 import open3d as o3d
 import numpy as np
@@ -17,7 +18,7 @@ import pytransform3d.rotations as pr
 import tf2_ros
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image, CompressedImage
-from geometry_msgs.msg import TwistStamped, Pose, PoseStamped
+from geometry_msgs.msg import Twist, TwistStamped, Pose, PoseStamped
 from rcl_interfaces.msg import Parameter
 from rcl_interfaces.srv import ListParameters, DescribeParameters, GetParameters, SetParameters
 
@@ -28,9 +29,12 @@ from inspection_srvs.srv import CaptureImage, MoveToPose, SetFocusMetric
 from std_msgs.msg import Float64, ColorRGBA, String
 from std_srvs.srv import Trigger
 
+kv = 0.8
+
 TELEOP = 0
 DYNAMIC_AUTOFOCUS = 1
 HILLCLIMB_AUTOFOCUS = 2
+SAVING_DATA = 3
 
 
 class RosThread(Node):
@@ -38,10 +42,14 @@ class RosThread(Node):
     moving_to_viewpoint_flag = False
     last_move_successful = False
 
+    servo_state = TELEOP
+
+    focus_value_alpha = 0.5
+    filtered_focus_value = 0.0
+
     # initialization method
     def __init__(self, stream_id=0):
         super().__init__('gui_node')
-
         self.start_measure()
 
         self.log = []
@@ -70,6 +78,11 @@ class RosThread(Node):
         self.depth_image = np.zeros((480, 640, 1), dtype=np.float32)
         self.illuminance_image = np.zeros((480, 640, 1), dtype=np.uint8)
 
+        # TF2 #########################################################################
+
+        self.tfBuffer = tf2_ros.Buffer()
+        self.staticTfBroadcaster = tf2_ros.StaticTransformBroadcaster(self)
+
         # MACRO CAMERA ####################################################################
 
         self.camera_frame_tf = np.eye(4)
@@ -77,26 +90,7 @@ class RosThread(Node):
         macro_camera_cb_group = MutuallyExclusiveCallbackGroup()
 
         self.focus_monitor = FocusMonitor(0.5, 0.5, 300, 300, 'sobel')
-        self.gphoto2_image = np.zeros((576, 1024, 3), dtype=np.uint8)
-        self.focus_metric_dict = {}
-        self.focus_metric_dict['buffer_size'] = 100
-        self.focus_metric_dict['metrics'] = {}
-        self.focus_metric_dict['metrics']['sobel'] = {}
-        self.focus_metric_dict['metrics']['sobel']['filtered_value'] = []
-        self.focus_metric_dict['metrics']['sobel']['raw_value'] = []
-        self.focus_metric_dict['metrics']['sobel']['time'] = []
-        self.focus_metric_dict['metrics']['sobel']['image'] = np.zeros(
-            (200, 200))
-
-        # Create a blank image
-        height, width = 400, 800
-        image = np.ones((height, width, 3), dtype=np.uint8) * 255
-
-        # Define the bounding box
-        bbox_top_left = (50, 50)
-        bbox_bottom_right = (750, 350)
-        cv2.rectangle(image, bbox_top_left, bbox_bottom_right, (0, 0, 0), 2)
-        self.focus_metric_dict['plot'] = image
+        macro_image = np.zeros((576, 1024, 3), dtype=np.uint8)
 
         image_topic = '/image_raw/compressed'
         image_sub = self.create_subscription(
@@ -104,28 +98,20 @@ class RosThread(Node):
 
         # FOCUS #########################################################################
 
+        # Generate self.autofocus_data_dict
+        self.reset_autofocus_data()
+
         self.focus_state = TELEOP
         focus_cb_group = MutuallyExclusiveCallbackGroup()
 
-        self.focus_data_dict = {}
-        self.ema_focus_value = 0
-        self.ema_focus_value2 = 0
-        self.dema_focus_value = 0
-        self.previous_dema_focus_value = 0
-        self.ratio = 0
-        self.dFV = 0  # computed using dema_focus_value
-        self.smooth_ddFV = 0  # computed using dema_focus_value
-        self.previous_dFV = 0
-        self.keys = None
-        self.max_pose = Pose()
-
         def change_metric_callback(request, response):
-            success = self.focus_monitor.set_metric(request.metric_name)
+            success = self.set_focus_metric(request.metric)
             print(f'Success: {success}')
             response.success = success
             return response
 
         def auto_focus_callback(request, response):
+            self.reset_autofocus_data()
             response.success = True
             return response
 
@@ -135,8 +121,6 @@ class RosThread(Node):
         self.auto_focus_service = self.create_service(Trigger, '/auto_focus', auto_focus_callback,
                                                       callback_group=focus_cb_group)
 
-        self.filtered_focus_value = 0.0
-        self.focus_value_alpha = 0.5
         self.focus_pub = self.create_publisher(
             FocusValue, image_topic + '/focus_value', 10)
 
@@ -253,7 +237,7 @@ class RosThread(Node):
                                                      Image, "/camera/camera/depth/image_rect_raw")
         rgb_image_sub = message_filters.Subscriber(self,
                                                    Image, "/camera/camera/color/image_rect_raw")
-        # gphoto2_image_sub = message_filters.Subscriber(self,
+        # macro_image_sub = message_filters.Subscriber(self,
         #    Image, "/camera1/image_raw")
         ts = Tf2MessageFilter(self, [depth_image_sub, rgb_image_sub], 'part_frame',
                               'camera_depth_optical_frame', queue_size=1000)
@@ -261,8 +245,8 @@ class RosThread(Node):
 
         # Inference
 
-        self.twist = TwistStamped()
-        self.twist.header.frame_id = 'tool0'
+        self.servo_twist = TwistStamped()
+        self.servo_twist.header.frame_id = 'tool0'
         inference_timer_period = 0.1
         # self.inference_timer = self.create_timer(
         # inference_timer_period, self.inference_timer_callback)
@@ -305,8 +289,6 @@ class RosThread(Node):
 
         # SERVO #########################################################################
 
-        self.servo_state = TELEOP
-
         servo_cb_group = MutuallyExclusiveCallbackGroup()
 
         self.m = 5
@@ -345,11 +327,11 @@ class RosThread(Node):
             resp = future.result()
             self.get_logger().info('Servo node started!')
 
-        self.twist_pub = self.create_publisher(
+        self.servo_twist_pub = self.create_publisher(
             TwistStamped, '/servo_node/delta_twist_cmds', 10)
-        self.twist_pub_timer_period = 0.1
-        self.twist_pub_timer = self.create_timer(
-            self.twist_pub_timer_period, self.twist_pub_timer_callback, callback_group=servo_cb_group)
+        self.servo_twist_pub_timer_period = 0.1
+        self.servo_twist_pub_timer = self.create_timer(
+            self.servo_twist_pub_timer_period, self.servo_twist_pub_timer_callback, callback_group=servo_cb_group)
 
         light_ring = o3d.geometry.TriangleMesh.create_cylinder(
             radius=0.1, height=0.01)
@@ -359,11 +341,6 @@ class RosThread(Node):
             self.depth_intrinsic, extrinsic=np.eye(4))
 
         self.geom_pcd = self.generate_point_cloud()
-
-        # TF2 #########################################################################
-
-        self.tfBuffer = tf2_ros.Buffer()
-        self.staticTfBroadcaster = tf2_ros.StaticTransformBroadcaster(self)
 
         # MoveIt #########################################################################
 
@@ -377,13 +354,6 @@ class RosThread(Node):
             self.get_logger().info('moveit path planning service not available, waiting again...')
         else:
             self.get_logger().info('Connected to moveit path planning service!')
-
-        # FOCUS EXPERIMENT
-
-        # Run focus test
-        self.focus_experiment_trigger = Trigger.Request()
-        self.focus_experiment_cli = self.create_client(
-            Trigger, '/inspection/count_callback', callback_group=None)
 
     def start_measure(self):
         self.t0 = time.time()
@@ -572,9 +542,15 @@ class RosThread(Node):
     def zoom(self, zoom_vel):
         self.zoom_goal = self.zoom_pos + zoom_vel
 
-    def twist_pub_timer_callback(self):
+    def autofocus_on(self):
+        self.servo_state = DYNAMIC_AUTOFOCUS
+
+    def autofocus_off(self):
+        self.servo_state = TELEOP
+
+    def servo_twist_pub_timer_callback(self):
         if self.servo_state == TELEOP:
-            pass
+            self.servo_twist.twist = Twist()
         elif self.servo_state == DYNAMIC_AUTOFOCUS:
             pass
         elif self.servo_state == HILLCLIMB_AUTOFOCUS:
@@ -584,27 +560,27 @@ class RosThread(Node):
         # gx = self.pan_goal[0]
         # vx0 = self.pan_vel[0]
         # ax = (self.k_p * (gx - px0) - self.c_p * vx0) / self.m
-        # vx1 = vx0 + ax * self.twist_pub_timer_period
+        # vx1 = vx0 + ax * self.servo_twist_pub_timer_period
         # if abs(vx1) < 0.01:
         #     vx1 = 0.0
         # elif vx1 > 0.0:
         #     vx1 = min(round(vx1, 3), self.pan_vel_max[0])
         # else:
         #     vx1 = max(round(vx1, 3), -self.pan_vel_max[0])
-        # px1 = px0 + vx1 * self.twist_pub_timer_period
+        # px1 = px0 + vx1 * self.servo_twist_pub_timer_period
 
         # py0 = self.pan_pos[1]
         # gy = self.pan_goal[1]
         # vy0 = self.pan_vel[1]
         # ay = (self.k_p * (gy - py0) - self.c_p * vy0) / self.m
-        # vy1 = vy0 + ay * self.twist_pub_timer_period
+        # vy1 = vy0 + ay * self.servo_twist_pub_timer_period
         # if abs(vy1) < 0.01:
         #     vy1 = 0.0
         # elif vy1 > 0.0:
         #     vy1 = min(round(vy1, 3), self.pan_vel_max[1])
         # else:
         #     vy1 = max(round(vy1, 3), -self.pan_vel_max[1])
-        # py1 = py0 + vy1 * self.twist_pub_timer_period
+        # py1 = py0 + vy1 * self.servo_twist_pub_timer_period
 
         # py1 = round(py1, 3)
 
@@ -612,14 +588,14 @@ class RosThread(Node):
         # gz = self.zoom_goal
         # vz0 = self.zoom_vel
         # az = (self.k_p * (gz - pz0) - self.c_p * vz0) / self.m
-        # vz1 = vz0 + az * self.twist_pub_timer_period
+        # vz1 = vz0 + az * self.servo_twist_pub_timer_period
         # if abs(vz1) < 0.01:
         #     vz1 = 0.0
         # elif vz1 > 0.0:
         #     vz1 = min(round(vz1, 3), self.zoom_vel_max)
         # else:
         #     vz1 = max(round(vz1, 3), -self.zoom_vel_max)
-        # pz1 = pz0 + vz1 * self.twist_pub_timer_period
+        # pz1 = pz0 + vz1 * self.servo_twist_pub_timer_period
         # # Round to 3 decimal places
 
         # px1 = round(px1, 3)
@@ -642,12 +618,12 @@ class RosThread(Node):
 
         # # Publish twist if any values are non-zero
         # if vx1 != 0.0 or vy1 != 0.0 or vz1 != 0.0:
-        #     self.twist.twist.linear.x = -vx1
-        #     self.twist.twist.linear.y = vz1
-        #     self.twist.twist.linear.z = vy1
+        #     self.servo_twist.twist.linear.x = -vx1
+        #     self.servo_twist.twist.linear.y = vz1
+        #     self.servo_twist.twist.linear.z = vy1
 
-        self.twist.header.stamp = self.get_clock().now().to_msg()
-        self.twist_pub.publish(self.twist)
+        self.servo_twist.header.stamp = self.get_clock().now().to_msg()
+        self.servo_twist_pub.publish(self.servo_twist)
 
     def generate_point_cloud(self):
         new_pcd = o3d.geometry.PointCloud()
@@ -679,7 +655,7 @@ class RosThread(Node):
             dmap_msg, desired_encoding="passthrough").astype(np.float32) / 1000.0
         rgb_image = self.bridge.imgmsg_to_cv2(
             rgb_msg, desired_encoding="passthrough").astype(np.uint8)
-        # gphoto2_image = self.bridge.imgmsg_to_cv2(
+        # macro_image = self.bridge.imgmsg_to_cv2(
         # gphoto2_msg, desired_encoding="passthrough").astype(np.uint8)
         hsv_image = cv2.cvtColor(rgb_image, cv2.COLOR_BGR2HSV).astype(np.uint8)
         # Set all pixels in image above 1000 to 0
@@ -705,81 +681,119 @@ class RosThread(Node):
         self.rgb_image = rgb_image
         self.T = T
         self.illuminance_image = hsv_image[:, :, 2]
-        # self.gphoto2_image = gphoto2_image
-
-    def gphoto2_image_callback(self, msg):
-        self.gphoto2_image = self.bridge.imgmsg_to_cv2(
-            msg, desired_encoding="rgb8").astype(np.uint8)
-
-        height, width, _ = self.gphoto2_image.shape
-
-        cx = self.focus_monitor.cx
-        cy = self.focus_monitor.cy
-        w = self.focus_monitor.w
-        h = self.focus_monitor.h
-        x0 = int(cx*width - w/2)
-        y0 = int(cy*height - h/2)
-        x1 = int(cx*width + w/2)
-        y1 = int(cy*height + h/2)
-
-        focus_value, focus_image = self.focus_monitor.measure_focus(
-            self.gphoto2_image)
-
-        # self.focus_metric_dict['sobel']['buffer'].append(metrics.)
-
-        if len(self.focus_metric_dict['metrics']['sobel']['value']) > self.focus_metric_dict['buffer_size']:
-            self.focus_metric_dict['metrics']['sobel']['value'].pop(0)
-            self.focus_metric_dict['metrics']['sobel']['time'].pop(0)
-        self.focus_metric_dict['metrics']['sobel']['time'].append(time.time())
-        self.focus_metric_dict['metrics']['sobel']['value'].append(focus_value)
-        self.focus_metric_dict['metrics']['sobel']['image'] = focus_image
-
-        cv2.rectangle(self.gphoto2_image, (x0, y0), (x1, y1),
-                      color=(204, 108, 231), thickness=2)
-        #   color=(255, 255, 255), thickness=2)
 
     def set_focus_metric(self, name):
-        self.focus_monitor.set_metric(name)
+        self.save_focus_data('/root/Inspection/data/')
+        self.reset_autofocus_data()
+        return self.focus_monitor.set_metric(name)
 
-    def compressed_image_callback(self, msg):
-        # self.stop_measure()
-        # self.start_measure()
-        self.gphoto2_image = self.bridge.compressed_imgmsg_to_cv2(
-            msg, desired_encoding="rgb8").astype(np.uint8)
+    def get_dynamic_autofocus_velocity(self):
+        # Compute dFV and ddFV
+        if len(self.autofocus_data_dict['time']) == 1:
+            dFV = 0
+            ddFV = 0
+            smooth_ddFV = 0
+        elif len(self.autofocus_data_dict['time']) == 2:
+            ratio = self.autofocus_data_dict['focus_value_dema'][-1] / \
+                self.autofocus_data_dict['focus_value_dema'][-2]
+            dFV = self.autofocus_data_dict['focus_value_dema'][-1] - \
+                self.autofocus_data_dict['focus_value_dema'][-2]
+            ddFV = 0
+            smooth_ddFV = 0
+        else:
+            ratio = self.autofocus_data_dict['focus_value_dema'][-1] / \
+                self.autofocus_data_dict['focus_value_dema'][-2]
+            dFV = self.autofocus_data_dict['focus_value_dema'][-1] - \
+                self.autofocus_data_dict['focus_value_dema'][-2]
+            ddFV = self.autofocus_data_dict['dFV'][-1] - \
+                self.autofocus_data_dict['dFV'][-2]
+            # Smoothing ddFV
+            K_smooth = 2 / (3 + 1)
+            smooth_ddFV = (
+                K_smooth * (ddFV - self.autofocus_data_dict['smooth_ddFV'][-1])) + self.autofocus_data_dict['smooth_ddFV'][-1]
 
-        height, width, _ = self.gphoto2_image.shape
+        # Calculate speed
+        if self.smooth_ddFV < -0.1 and self.dFV > 0:
+            speed = kv*(ratio-0.5)
+        elif self.autofocus_data_dict['dFV'][-2] > 2 and dFV < 2 and smooth_ddFV < -0.1:
+            speed = 0
+            print('Completed autofocus')
+        else:
+            speed = kv/ratio
 
-        cx = self.focus_monitor.cx
-        cy = self.focus_monitor.cy
-        w = self.focus_monitor.w
-        h = self.focus_monitor.h
-        x0 = int(cx*width - w/2)
-        y0 = int(cy*height - h/2)
-        x1 = int(cx*width + w/2)
-        y1 = int(cy*height + h/2)
+        # Update data dictionary
+        self.autofocus_data_dict['ratio'].append(ratio)
+        self.autofocus_data_dict['dFV'].append(dFV)
+        self.autofocus_data_dict['ddFV'].append(ddFV)
+        self.autofocus_data_dict['smooth_ddFV'].append(smooth_ddFV)
 
-        focus_value, focus_image = self.focus_monitor.measure_focus(
-            self.gphoto2_image)
+        return (0, speed, 0)
 
-        self.filtered_focus_value = self.focus_value_alpha * focus_value + \
-            (1 - self.focus_value_alpha) * self.filtered_focus_value
-
-        # Publish focus value
-        self.focus_pub.publish(FocusValue(
-            header=msg.header, metric=self.focus_monitor.metric, data=self.filtered_focus_value, raw_data=focus_value))
-
-        # Generate random data
-        data = np.random.randint(0, 100, 100)
+    def reset_autofocus_data(self):
+        image = np.zeros((300, 300, 3), dtype=np.uint8)
+        focus_image = np.zeros((300, 300, 3), dtype=np.uint8)
 
         # Create a blank image
         height, width = 400, 800
-        image = np.ones((height, width, 3), dtype=np.uint8) * 255
+        plot_image = np.ones((height, width, 3), dtype=np.uint8) * 255
+
+        # Define the bounding box
+        bbox_top_left = (50, 50)
+        bbox_bottom_right = (750, 350)
+        cv2.rectangle(image, bbox_top_left, bbox_bottom_right, (0, 0, 0), 2)
+
+        self.autofocus_data_dict = {
+            'metric': 'sobel',
+            'buffer_size': 100,
+            'fv_max_ema': 1000,
+            'time': [],
+            'focus_value': [],
+            'focus_value_ema': [],
+            'focus_value_ema2': [],
+            'focus_value_dema': [],
+            'dFV': [],
+            'ddFV': [],
+            'smooth_ddFV': [],
+            'ratio': [],
+            'image': [image],
+            'focus_image': [focus_image],
+            'position': [],
+            'velocity': [],
+            'plot': image
+        }
+
+    def plot_focus_metrics(self):
+        # Plot focus metric data
+        data = self.autofocus_data_dict['focus_value']
+        # If data is shorter than the buffer size, pad with zeros
+        if len(data) < self.autofocus_data_dict['buffer_size']:
+            data = data + [0] * \
+                (self.autofocus_data_dict['buffer_size'] - len(data))
+        # If data is longer than buffer size, truncate to last buffer_size elements
+        elif len(data) > self.autofocus_data_dict['buffer_size']:
+            data = data[-self.autofocus_data_dict['buffer_size']:]
+
+        # Update fv_max_ema
+        max_curr = 1.5*max(data)
+        if max_curr > self.autofocus_data_dict['fv_max_ema']:
+            self.autofocus_data_dict['fv_max_ema'] = max_curr
+        else:
+            self.autofocus_data_dict['fv_max_ema'] = self.autofocus_data_dict['fv_max_ema'] * \
+                self.focus_value_alpha + \
+                (1 - self.focus_value_alpha) * max_curr
+
+        # Scale data to fit within the bounding box
+        data = [100 * x / self.autofocus_data_dict['fv_max_ema'] for x in data]
+
+        # Create a blank image
+        height, width = 400, 800
+        image = np.ones((height, width, 3), dtype=np.uint8) * 0
 
         # Define the bounding box
         bbox_top_left = (50, 50)
         bbox_bottom_right = (750, 350)
         cv2.rectangle(image, bbox_top_left,
-                      bbox_bottom_right, (0, 0, 0), 2)
+                      bbox_bottom_right, (255, 255, 255), 2)
 
         # Plot the data as vertical bars
         bar_width = (bbox_bottom_right[0] - bbox_top_left[0]) // len(data)
@@ -790,26 +804,146 @@ class RosThread(Node):
                     bbox_top_left[1]) * (value / 100))
             x2 = x1 + bar_width - 1
             y2 = bbox_bottom_right[1]
-            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 0, 0), -1)
+            cv2.rectangle(image, (x1, y1), (x2, y2), (255, 255, 255), -1)
 
-        self.focus_metric_dict['plot'] = image
+        self.autofocus_data_dict['plot'] = image
 
-        # self.focus_metric_dict['sobel']['buffer'].append(metrics.)
+    def save_focus_data(self, file_path):
+        self.servo_state = SAVING_DATA
 
-        if len(self.focus_metric_dict['metrics']['sobel']['filtered_value']) > self.focus_metric_dict['buffer_size']:
-            self.focus_metric_dict['metrics']['sobel']['time'].pop(0)
-            self.focus_metric_dict['metrics']['sobel']['filtered_value'].pop(0)
-            self.focus_metric_dict['metrics']['sobel']['raw_value'].pop(0)
-        self.focus_metric_dict['metrics']['sobel']['time'].append(time.time())
-        self.focus_metric_dict['metrics']['sobel']['filtered_value'].append(
-            self.filtered_focus_value)
-        self.focus_metric_dict['metrics']['sobel']['raw_value'].append(
-            focus_value)
-        self.focus_metric_dict['metrics']['sobel']['image'] = focus_image
+        # Remove image and focus_image from dictionary
+        images = self.autofocus_data_dict.pop('image')
+        focus_images = self.autofocus_data_dict.pop('focus_image')
+        plot = self.autofocus_data_dict.pop('plot')
+        # Save the dictionary to a file
+        with open(file_path + 'data.json', 'w') as f:
+            json.dump(self.autofocus_data_dict, f)
+        # Restore image and focus_image to dictionary
+        self.autofocus_data_dict['image'] = images
+        self.autofocus_data_dict['focus_image'] = focus_images
+        # Save images to video
+        out = cv2.VideoWriter(file_path + 'focus_data.avi', cv2.VideoWriter_fourcc(
+            'M', 'J', 'P', 'G'), 10, (images[0].shape[1], images[0].shape[0]))
+        for i in range(len(images)):
+            print(np.max(images[i]))
+            out.write(images[i])
+        out.release()
 
-        # cv2.rectangle(self.gphoto2_image, (x0, y0), (x1, y1),
-        #   color=(204, 108, 231), thickness=2)
-        #   color=(255, 255, 255), thickness=2)
+        self.servo_state = TELEOP
+
+    def compressed_image_callback(self, msg):
+        if self.servo_state == SAVING_DATA:
+            return
+
+        msg_time = msg.header.stamp
+
+        macro_image = self.bridge.compressed_imgmsg_to_cv2(
+            msg, desired_encoding="rgb8").astype(np.uint8)
+
+        height, width, _ = macro_image.shape
+
+        cx = self.focus_monitor.cx
+        cy = self.focus_monitor.cy
+        w = self.focus_monitor.w
+        h = self.focus_monitor.h
+        x0 = int(cx*width - w/2)
+        y0 = int(cy*height - h/2)
+        x1 = int(cx*width + w/2)
+        y1 = int(cy*height + h/2)
+
+        focus_value, focus_image = self.focus_monitor.measure_focus(
+            macro_image)
+
+        self.filtered_focus_value = self.focus_value_alpha * focus_value + \
+            (1 - self.focus_value_alpha) * self.filtered_focus_value
+
+        # Publish focus value
+        focus_msg = FocusValue(
+            header=msg.header, metric=self.focus_monitor.metric, data=self.filtered_focus_value, raw_data=focus_value)
+        self.focus_pub.publish(focus_msg)
+
+        position = (0, 0, 0)
+
+        # Get the transform from world to tool0
+        try:
+            # Attempt to get the transform at the exact requested time
+            tf_wt = self.tfBuffer.lookup_transform(
+                'world', 'tool0', msg_time)
+            position = (tf_wt.transform.translation.x,
+                        tf_wt.transform.translation.y, tf_wt.transform.translation.z)
+
+        except tf2_ros.TransformException as ex:
+            # Fallback to the latest available transform within a 1-second duration
+            pass
+            # tf_wt = self.tfBuffer.lookup_transform(
+            # 'world', 'tool0', rclpy.time.Time(), rclpy.time.Duration(seconds=1.0))
+
+        # Get velocity based on servo state
+        if self.servo_state == DYNAMIC_AUTOFOCUS:
+            velocity = self.get_dynamic_autofocus_velocity(focus_msg)
+        else:
+            velocity = (0, 0, 0)
+
+        # Convert Time msg to float value
+        self.timestamp = msg_time.sec + msg_time.nanosec / 1e9
+
+        # Filter focus value
+        # Calculate the EMA
+        N_ema = 20  # Doesn't work consistently with 15
+        if len(self.autofocus_data_dict['time']) <= 1:
+            focus_value_ema = focus_value
+            focus_value_ema2 = focus_value
+            focus_value_dema = focus_value
+            previous_focus_value_dema = focus_value
+        else:
+            focus_value_ema = self.autofocus_data_dict['focus_value_ema'][-1]
+            focus_value_ema2 = self.autofocus_data_dict['focus_value_ema2'][-1]
+            focus_value_dema = self.autofocus_data_dict['focus_value_dema'][-1]
+            previous_focus_value_dema = self.autofocus_data_dict['focus_value_dema'][-1]
+        K = 2 / (N_ema + 1)  # EMA smoothing factor for the last 15 periods
+
+        focus_value_ema = (K * focus_value - focus_value_ema) + focus_value_ema
+        focus_value_ema2 = (K * focus_value_ema -
+                            focus_value_ema2) + focus_value_ema2
+        focus_value_dema = 2 * focus_value_ema - focus_value_ema2
+
+        if previous_focus_value_dema != 0:
+            ratio = focus_value_dema / previous_focus_value_dema
+
+        # Update autofocus data dictionary
+
+        if self.servo_state == DYNAMIC_AUTOFOCUS:
+            # self.get_dynamic_autofocus_velocity(focus_msg)
+            pass
+        else:
+            if len(self.autofocus_data_dict['time']) > self.autofocus_data_dict['buffer_size']:
+                self.autofocus_data_dict['time'].pop(0)
+                self.autofocus_data_dict['focus_value_ema'].pop(0)
+                self.autofocus_data_dict['focus_value_ema2'].pop(0)
+                self.autofocus_data_dict['focus_value'].pop(0)
+                self.autofocus_data_dict['position'].pop(0)
+                self.autofocus_data_dict['velocity'].pop(0)
+                self.autofocus_data_dict['image'].pop(0)
+                self.autofocus_data_dict['focus_image'].pop(0)
+
+        self.autofocus_data_dict['time'].append(self.timestamp)
+        self.autofocus_data_dict['focus_value_ema'].append(focus_value_ema)
+        self.autofocus_data_dict['focus_value_ema2'].append(focus_value_ema2)
+        self.autofocus_data_dict['focus_value_dema'].append(focus_value_dema)
+        self.autofocus_data_dict['focus_value'].append(focus_value)
+        self.autofocus_data_dict['image'].append(focus_image)
+        self.autofocus_data_dict['focus_image'].append(focus_image)
+        self.autofocus_data_dict['position'].append(position)
+        self.autofocus_data_dict['velocity'].append(velocity)
+
+        self.plot_focus_metrics()
+
+        cv2.rectangle(macro_image, (x0, y0), (x1, y1),
+                      color=(255, 255, 255), thickness=4)
+
+        print(len(self.autofocus_data_dict['image']))
+
+        self.macro_image = macro_image
 
     def trigger_focus_experiment(self):
         future = self.focus_experiment_cli.call_async(
@@ -825,7 +959,7 @@ class RosThread(Node):
                 'Service call failed %r' % (e,))
 
     def get_data(self):
-        return self.rgb_image, self.annotated_rgb_image, self.depth_image, self.depth_intrinsic, self.illuminance_image, self.gphoto2_image, self.T
+        return self.rgb_image, self.annotated_rgb_image, self.depth_image, self.depth_intrinsic, self.illuminance_image, self.macro_image, self.T
 
     def read_rgb_image(self):
         return self.annotated_rgb_image

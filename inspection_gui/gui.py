@@ -713,6 +713,19 @@ class MyGui():
 
         self.move_button.set_on_clicked(_on_move_button_clicked)
 
+        # Focus button
+        self.focus_button = gui.Button("Focus")
+        self.focus_button.toggleable = True
+
+        def _on_focus_button_clicked():
+            on = self.focus_button.is_on
+            if on:
+                self.ros_thread.autofocus_on()
+            else:
+                self.ros_thread.autofocus_off()
+
+        self.focus_button.set_on_clicked(_on_focus_button_clicked)
+
         # Image capture
         self.image_count = 0
 
@@ -754,7 +767,7 @@ class MyGui():
         horiz.add_fixed(0.5 * em)
         horiz.add_child(self.move_button)
         horiz.add_fixed(0.5 * em)
-        horiz.add_child(gui.Button("Focus"))
+        horiz.add_child(self.focus_button)
         horiz.add_fixed(0.5 * em)
         horiz.add_child(self.capture_image_button)
         horiz.add_fixed(0.5 * em)
@@ -1066,8 +1079,6 @@ class MyGui():
         settings_vert.add_child(gui.Label('Camera Settings:'))
         settings_vert.add_child(grid)
 
-        camera_tabs.add_tab("Settings", settings_vert)
-
         # METRIC PANEL ########################
 
         focus_vert = gui.Vert(0, gui.Margins(
@@ -1110,6 +1121,7 @@ class MyGui():
         focus_vert.add_child(self.focus_metric_image)
 
         camera_tabs.add_tab("Focus", focus_vert)
+        camera_tabs.add_tab("Settings", settings_vert)
 
         camera_vert = gui.Vert(0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
@@ -2205,7 +2217,8 @@ class MyGui():
         self.moving_to_viewpoint_flag = True
 
         # Get selected viewpoint
-        selected_region = self.viewpoint_dict['regions'][f'region_{self.selected_viewpoint}']
+        selected_region =  \
+            self.viewpoint_dict['regions'][f'region_{self.selected_viewpoint}']
         viewpoint = np.array(selected_region['viewpoint'])
 
         # Convert position to meters
@@ -2245,40 +2258,19 @@ class MyGui():
 
         # Pass data to Plotting Process
 
-        filtered_focus_metric_data = self.ros_thread.focus_metric_dict[
-            'metrics']['sobel']['filtered_value']
-        raw_focus_metric_data = self.ros_thread.focus_metric_dict[
-            'metrics']['sobel']['raw_value']
-        focus_metric_time = self.ros_thread.focus_metric_dict['metrics']['sobel']['time']
-        focus_metric_image = self.ros_thread.focus_metric_dict['metrics']['sobel']['image']
-        focus_plot = self.ros_thread.focus_metric_dict['plot']
+        focus_image = self.ros_thread.autofocus_data_dict['focus_image'][-1]
+        focus_plot = self.ros_thread.autofocus_data_dict['plot']
 
-        self.plotting_data['depth_image'] = depth_image
-        self.plotting_data['focus_metric_time'] = focus_metric_time
-        self.plotting_data['filtered_focus_metric_data'] = filtered_focus_metric_data
-        self.plotting_data['raw_focus_metric_data'] = raw_focus_metric_data
-        self.plotting_data['focus_metric_image'] = focus_metric_image
-
-        t0 = time.time()
-        # self.plotting_pipe.send(self.plotting_data)
-
-        # t0 = time.time()
-        # plotting_results = self.plotting_pipe.recv()
-        # t1 = time.time()
-        # print(f"Plotting receive Time: {t1-t0}")
         depth_image_cv2_shape = self.shared_data_dict['depth_image']['shape']
-        focus_metric_plot_cv2_shape = self.shared_data_dict['focus_plot']['shape']
-        focus_metric_image_cv2_shape = self.shared_data_dict['focus_image']['shape']
 
         shm = shared_memory.SharedMemory(name='depth_image')
         depth_image_cv2 = np.ndarray(
             depth_image_cv2_shape, dtype=np.uint8, buffer=shm.buf)
 
         focus_metric_plot_cv2 = focus_plot
+        focus_metric_image_cv2 = focus_image
 
         shm = shared_memory.SharedMemory(name='focus_image')
-        focus_metric_image_cv2 = np.ndarray(
-            focus_metric_image_cv2_shape, dtype=np.uint8, buffer=shm.buf)
         # focus_metric_image_cv2 = np.zeros(
         #     focus_metric_image_cv2_shape, dtype=np.uint8)
         # np.copyto(focus_metric_image_cv2, shared_array)
