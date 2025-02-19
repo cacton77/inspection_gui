@@ -89,6 +89,8 @@ class MyGui():
 
     def __init__(self, update_delay=-1):
 
+        self.fps = 30
+
         self.config_file = os.path.expanduser(
             '~/Inspection/Parts/config/default.yaml')
         self.config_dict = yaml.load(
@@ -367,7 +369,7 @@ class MyGui():
         self.light_panel = gui.CollapsableVert("Light Control", 0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
         self.light_panel.background_color = self.panel_color
-        self.light_panel.set_is_open(False)
+        self.light_panel.set_is_open(True)
         self.num_leds = 148
 
         def _on_light_intensity_changed(intensity):
@@ -461,7 +463,7 @@ class MyGui():
         self.viewpoint_generation_panel = gui.CollapsableVert("Viewpoints", 0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
         self.viewpoint_generation_panel.background_color = self.panel_color
-        self.viewpoint_generation_panel.set_is_open(False)
+        self.viewpoint_generation_panel.set_is_open(True)
 
         def _on_viewpoint_generation_button_clicked():
             # Disable UI buttons
@@ -1110,14 +1112,13 @@ class MyGui():
         grid.add_child(gui.Label("Focus Value Filter: "))
         grid.add_child(focus_value_alpha_edit)
 
-        self.focus_metric_figure = plt.figure()
         self.focus_metric_plot_image = gui.ImageWidget()
-
-        self.focus_image_figure = plt.figure()
         self.focus_metric_image = gui.ImageWidget()
+        self.velocity_plot_image = gui.ImageWidget()
 
         focus_vert.add_child(grid)
         focus_vert.add_child(self.focus_metric_plot_image)
+        focus_vert.add_child(self.velocity_plot_image)
         focus_vert.add_child(self.focus_metric_image)
 
         camera_tabs.add_tab("Focus", focus_vert)
@@ -2258,24 +2259,9 @@ class MyGui():
 
         # Pass data to Plotting Process
 
-        focus_image = self.ros_thread.autofocus_data_dict['focus_image'][-1]
-        focus_plot = self.ros_thread.autofocus_data_dict['plot']
-
-        depth_image_cv2_shape = self.shared_data_dict['depth_image']['shape']
-
-        shm = shared_memory.SharedMemory(name='depth_image')
-        depth_image_cv2 = np.ndarray(
-            depth_image_cv2_shape, dtype=np.uint8, buffer=shm.buf)
-
-        focus_metric_plot_cv2 = focus_plot
-        focus_metric_image_cv2 = focus_image
-
-        shm = shared_memory.SharedMemory(name='focus_image')
-        # focus_metric_image_cv2 = np.zeros(
-        #     focus_metric_image_cv2_shape, dtype=np.uint8)
-        # np.copyto(focus_metric_image_cv2, shared_array)
-        t1 = time.time()
-        # print(f"Plotting receive Time: {t1-t0}")
+        focus_metric_image_cv2 = self.ros_thread.autofocus_data_dict['focus_image'][-1]
+        focus_value_plot_cv2 = self.ros_thread.autofocus_data_dict['focus_value_plot']
+        velocity_plot_cv2 = self.ros_thread.autofocus_data_dict['velocity_plot']
 
         # Get data from ReconstructThread
         live_point_cloud = self.reconstruct_thread.live_point_cloud
@@ -2313,12 +2299,12 @@ class MyGui():
             elif stereo_tab == MyGui.STEREO_DEPTH_TAB:
                 depth_image[depth_image > self.depth_trunc] = 0
 
-                self.plotting_thread.update_depth_image(depth_image)
-                depth_image_cv2 = self.plotting_thread.get_depth_image()
+                # self.plotting_thread.update_depth_image(depth_image)
+                # depth_image_cv2 = self.plotting_thread.get_depth_image()
 
                 # Replace black pixels with transparent pixels
-                depth_image_o3d = o3d.geometry.Image(depth_image_cv2)
-                self.depth_image.update_image(depth_image_o3d)
+                # depth_image_o3d = o3d.geometry.Image(depth_image_cv2)
+                # self.depth_image.update_image(depth_image_o3d)
 
             # ILLUMINANCE TAB ########################################
 
@@ -2547,14 +2533,17 @@ class MyGui():
             # focus_metric_plot_cv2 = self.plotting_thread.get_focus_metric_plot()
             # focus_metric_image_cv2 = self.plotting_thread.get_focus_metric_image()
 
-            focus_metric_plot_o3d = o3d.geometry.Image(focus_metric_plot_cv2)
+            focus_metric_plot_o3d = o3d.geometry.Image(focus_value_plot_cv2)
             self.focus_metric_plot_image.update_image(focus_metric_plot_o3d)
 
             focus_metric_image_o3d = o3d.geometry.Image(focus_metric_image_cv2)
             self.focus_metric_image.update_image(focus_metric_image_o3d)
 
+            velocity_plot_o3d = o3d.geometry.Image(velocity_plot_cv2)
+            self.velocity_plot_image.update_image(velocity_plot_o3d)
+
             # Update log
-        self.log_list = self.ros_thread.read_log()
+        # self.log_list = self.ros_thread.read_log()
         # self.log_list.insert(0, "Log " + str(np.random.randint(1000)))
         # self.log_list = self.log_list[:1000]
 
@@ -2562,9 +2551,20 @@ class MyGui():
         self.ros_log_text.selected_index = 0
 
         this_draw_time = time.time()
+        if this_draw_time - self.last_draw_time < 1/self.fps:
+            time.sleep(1/self.fps - (this_draw_time - self.last_draw_time))
+            this_draw_time = time.time()
         fps = 1.0 / (this_draw_time - self.last_draw_time)
         self.last_draw_time = this_draw_time
-        # print(f'FPS: {fps}')
+        # Add FPS to self.log_panel
+        self.log_list = []
+        self.log_list.append(f"GUI FPS: {fps:.2f}")
+        self.log_list.append(
+            f'Macro Image FPS: {self.ros_thread.macro_image_fps:.2f}')
+        self.log_list.append(
+            f'Focus Measurement Time: {self.ros_thread.focus_measurement_time:.2f}')
+        self.ros_log_text.set_items(self.log_list)
+        self.ros_log_text.selected_index = 0
 
         return True
 
@@ -2656,7 +2656,7 @@ class MyGui():
 
         # Log Panel
 
-        max_height = 10 * em
+        max_height = 8 * em
         height = min(self.log_panel.calc_preferred_size(
             layout_context, gui.Widget.Constraints()).height, max_height)
 

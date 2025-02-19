@@ -12,6 +12,7 @@ def gaussian(x, y, mu_x, mu_y, sigma):
 
 
 class LightMap():
+
     def __init__(self, shape_mm, dpmm, led_locations):
         self.stopped = True
         self.t = threading.Thread(target=self.update_map)
@@ -33,6 +34,7 @@ class LightMap():
             led_location = (
                 int(led_locations[i][0]*dpmm + width_px/2), int(led_locations[i][1]*dpmm + height_px/2))
             self.led_locations_px.append(led_location)
+        self.pixel_values = [0]*len(led_locations)
 
         x = np.linspace(-shape_mm[0]/2, shape_mm[0]/2, width_px)
         y = np.linspace(-shape_mm[1]/2, shape_mm[1]/2, height_px)

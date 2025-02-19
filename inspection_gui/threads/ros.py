@@ -17,7 +17,7 @@ import pytransform3d.rotations as pr
 
 import tf2_ros
 from cv_bridge import CvBridge
-from sensor_msgs.msg import Image, CompressedImage
+from sensor_msgs.msg import Image, CompressedImage, Joy
 from geometry_msgs.msg import Twist, TwistStamped, Pose, PoseStamped
 from rcl_interfaces.msg import Parameter
 from rcl_interfaces.srv import ListParameters, DescribeParameters, GetParameters, SetParameters
@@ -46,6 +46,40 @@ class RosThread(Node):
 
     focus_value_alpha = 0.5
     filtered_focus_value = 0.0
+
+    # SERVO
+    m = 5
+    k_p = 0.02
+    c_p = 45.0
+    k_o = 0.1
+    c_o = 0.1
+
+    joy_axes = [0., 0., 1., 0., 0., 1., 0., 0.]
+
+    pan_pos = (0., 0.)
+    pan_vel = (0., 0.)
+    pan_vel_min = (0.001, 0.001)
+    pan_vel_max = (1., 1.)
+    pan_goal = (0., 0.)
+
+    orbit_pos = (0., 0., 0.)
+    orbit_vel = (0., 0., 0.)
+    orbit_vel_max = (0.1, 0.1, 0.1)
+    orbit_goal = (0., 0., 0.)
+
+    zoom_pos = 0.0
+    zoom_vel = 0.0
+    zoom_vel_min = 0.001
+    zoom_vel_max = 1.0
+    zoom_goal = 0.0
+
+    servo_twist = TwistStamped()
+    servo_twist.header.frame_id = 'tool0'
+    servo_twist_pub_timer_period = 0.1
+
+    last_process_time = time.time()
+    macro_image_fps = 0
+    focus_measurement_time = 0
 
     # initialization method
     def __init__(self, stream_id=0):
@@ -91,12 +125,18 @@ class RosThread(Node):
 
         macro_camera_cb_group = MutuallyExclusiveCallbackGroup()
 
-        self.focus_monitor = FocusMonitor(0.5, 0.5, 300, 300, 'sobel')
+        self.focus_monitor = FocusMonitor(0.5, 0.5, 100, 100, 'sobel')
         self.macro_image = np.zeros((576, 1024, 3), dtype=np.uint8)
 
         image_topic = '/image_raw/compressed'
         image_sub = self.create_subscription(
             CompressedImage, image_topic, self.compressed_image_callback, 10, callback_group=macro_camera_cb_group)
+
+        # TELEOP
+
+        teleop_cb_group = MutuallyExclusiveCallbackGroup()
+        self.joy_sub = self.create_subscription(
+            Joy, '/joy', self.joy_callback, 10, callback_group=teleop_cb_group)
 
         # FOCUS #########################################################################
 
@@ -247,8 +287,6 @@ class RosThread(Node):
 
         # Inference
 
-        self.servo_twist = TwistStamped()
-        self.servo_twist.header.frame_id = 'tool0'
         inference_timer_period = 0.1
         # self.inference_timer = self.create_timer(
         # inference_timer_period, self.inference_timer_callback)
@@ -293,45 +331,26 @@ class RosThread(Node):
 
         servo_cb_group = MutuallyExclusiveCallbackGroup()
 
-        self.m = 5
-        self.k_p = 0.02
-        self.c_p = 45.0
-        self.k_o = 0.1
-        self.c_o = 0.1
-
-        self.pan_pos = (0., 0., 0.)
-        self.pan_vel = (0., 0., 0.)
-        self.pan_vel_max = (1, 1, 1)
-        self.pan_goal = (0., 0., 0.)
-
-        self.orbit_pos = (0., 0., 0.)
-        self.orbit_vel = (0., 0., 0.)
-        self.orbit_vel_max = (0.1, 0.1, 0.1)
-        self.orbit_goal = (0., 0., 0.)
-
-        self.zoom_pos = 0.0
-        self.zoom_vel = 0.0
-        self.zoom_vel_max = 1.0
-        self.zoom_goal = 0.0
-
         # Call /servo_node/start_servo service
         self.get_logger().info('Connecting to servo node...')
+        self.stop_servo_cli = self.create_client(
+            Trigger, '/servo_node/stop_servo', callback_group=servo_cb_group)
+        if not self.stop_servo_cli.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('start servo service not available, waiting again...')
+        else:
+            self.get_logger().info('Connected to servo node!')
+            self.stop_servo()
+
         self.start_servo_cli = self.create_client(
             Trigger, '/servo_node/start_servo', callback_group=servo_cb_group)
         if not self.start_servo_cli.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('start servo service not available, waiting again...')
         else:
-            req = Trigger.Request()
             self.get_logger().info('Connected to servo node!')
-            self.get_logger().info('Sending start servo request...')
-            future = self.start_servo_cli.call_async(req)
-            rclpy.spin_until_future_complete(self, future)
-            resp = future.result()
-            self.get_logger().info('Servo node started!')
+            self.start_servo()
 
         self.servo_twist_pub = self.create_publisher(
             TwistStamped, '/servo_node/delta_twist_cmds', 10)
-        self.servo_twist_pub_timer_period = 0.1
         self.servo_twist_pub_timer = self.create_timer(
             self.servo_twist_pub_timer_period, self.servo_twist_pub_timer_callback, callback_group=servo_cb_group)
 
@@ -357,11 +376,37 @@ class RosThread(Node):
         else:
             self.get_logger().info('Connected to moveit path planning service!')
 
+        # PLOTTING ######################################################################
+        self.plot_timer_period = 0.1
+        self.plot_timer = self.create_timer(
+            self.plot_timer_period, self.plot_timer_callback)
+
     def start_measure(self):
         self.t0 = time.time()
 
     def stop_measure(self):
         self.get_logger().info(f'Measurement time: {time.time() - self.t0}')
+
+    def start_servo(self):
+        # Call /servo_node/start_servo service
+        req = Trigger.Request()
+        self.get_logger().info('Sending start servo request...')
+        future = self.start_servo_cli.call_async(req)
+        rclpy.spin_until_future_complete(self, future)
+        resp = future.result()
+        self.get_logger().info('Servo node started!')
+
+    def stop_servo(self):
+        # Call /servo_node/stop_servo service
+        req = Trigger.Request()
+        self.get_logger().info('Sending stop servo request...')
+        future = self.stop_servo_cli.call_async(req)
+        rclpy.spin_until_future_complete(self, future)
+        resp = future.result()
+        self.get_logger().info('Servo node stopped!')
+
+    def joy_callback(self, msg):
+        self.joy_axes = msg.axes
 
     def move_to_pose(self, tf, frame_id):
         self.moving_to_viewpoint = True
@@ -551,79 +596,7 @@ class RosThread(Node):
         self.servo_state = TELEOP
 
     def servo_twist_pub_timer_callback(self):
-        if self.servo_state == TELEOP:
-            self.servo_twist.twist = Twist()
-        elif self.servo_state == DYNAMIC_AUTOFOCUS:
-            pass
-        elif self.servo_state == HILLCLIMB_AUTOFOCUS:
-            pass
-        # # Do not publish if all twist values are zero
-        # px0 = self.pan_pos[0]
-        # gx = self.pan_goal[0]
-        # vx0 = self.pan_vel[0]
-        # ax = (self.k_p * (gx - px0) - self.c_p * vx0) / self.m
-        # vx1 = vx0 + ax * self.servo_twist_pub_timer_period
-        # if abs(vx1) < 0.01:
-        #     vx1 = 0.0
-        # elif vx1 > 0.0:
-        #     vx1 = min(round(vx1, 3), self.pan_vel_max[0])
-        # else:
-        #     vx1 = max(round(vx1, 3), -self.pan_vel_max[0])
-        # px1 = px0 + vx1 * self.servo_twist_pub_timer_period
-
-        # py0 = self.pan_pos[1]
-        # gy = self.pan_goal[1]
-        # vy0 = self.pan_vel[1]
-        # ay = (self.k_p * (gy - py0) - self.c_p * vy0) / self.m
-        # vy1 = vy0 + ay * self.servo_twist_pub_timer_period
-        # if abs(vy1) < 0.01:
-        #     vy1 = 0.0
-        # elif vy1 > 0.0:
-        #     vy1 = min(round(vy1, 3), self.pan_vel_max[1])
-        # else:
-        #     vy1 = max(round(vy1, 3), -self.pan_vel_max[1])
-        # py1 = py0 + vy1 * self.servo_twist_pub_timer_period
-
-        # py1 = round(py1, 3)
-
-        # pz0 = self.zoom_pos
-        # gz = self.zoom_goal
-        # vz0 = self.zoom_vel
-        # az = (self.k_p * (gz - pz0) - self.c_p * vz0) / self.m
-        # vz1 = vz0 + az * self.servo_twist_pub_timer_period
-        # if abs(vz1) < 0.01:
-        #     vz1 = 0.0
-        # elif vz1 > 0.0:
-        #     vz1 = min(round(vz1, 3), self.zoom_vel_max)
-        # else:
-        #     vz1 = max(round(vz1, 3), -self.zoom_vel_max)
-        # pz1 = pz0 + vz1 * self.servo_twist_pub_timer_period
-        # # Round to 3 decimal places
-
-        # px1 = round(px1, 3)
-        # py1 = round(py1, 3)
-        # pz1 = round(pz1, 3)
-
-        # self.pan_pos = (px1, py1)
-        # self.pan_vel = (vx1, vy1)
-
-        # self.zoom_pos = pz1
-        # self.zoom_vel = vz1
-        # self.zoom_goal = pz1
-
-        # if abs(vx1) < 0.25:
-        #     vx1 = 0.0
-        # if abs(vy1) < 0.25:
-        #     vy1 = 0.0
-        # if abs(vz1) < 0.25:
-        #     vz1 = 0.0
-
-        # # Publish twist if any values are non-zero
-        # if vx1 != 0.0 or vy1 != 0.0 or vz1 != 0.0:
-        #     self.servo_twist.twist.linear.x = -vx1
-        #     self.servo_twist.twist.linear.y = vz1
-        #     self.servo_twist.twist.linear.z = vy1
-
+        # Publish servo twist
         self.servo_twist.header.stamp = self.get_clock().now().to_msg()
         self.servo_twist_pub.publish(self.servo_twist)
 
@@ -689,6 +662,90 @@ class RosThread(Node):
         self.reset_autofocus_data()
         return self.focus_monitor.set_metric(name)
 
+    def get_teleop_velocity(self):
+        # Get last velocity
+        if len(self.autofocus_data_dict['velocity']) > 0:
+            v_last = self.autofocus_data_dict['velocity'][-1]
+        else:
+            v_last = (0., 0., 0.)
+        # Round to 3 decimal places
+        vx_curr = self.joy_axes[0]
+        vx_curr = 0.75 * vx_curr + 0.25 * v_last[0]
+        vx_curr = vx_curr if abs(vx_curr) > self.pan_vel_min[0] else 0.0
+
+        vy_curr = (-self.joy_axes[5]+1)/2 - (-self.joy_axes[2]+1)/2
+        vy_curr = 0.75 * vy_curr + 0.25 * v_last[1]
+        vy_curr = vy_curr if abs(vy_curr) > self.zoom_vel_min else 0.0
+
+        vz_curr = -self.joy_axes[1]
+        vz_curr = 0.75 * vz_curr + 0.25 * v_last[2]
+        vz_curr = vz_curr if abs(vz_curr) > self.pan_vel_min[1] else 0.0
+
+        return (round(vx_curr, 3), round(vy_curr, 3), round(vz_curr, 3))
+
+        # Do not publish if all twist values are zero
+        px0 = self.pan_pos[0]
+        gx = self.pan_goal[0]
+        vx0 = self.pan_vel[0]
+        ax = (self.k_p * (gx - px0) - self.c_p * vx0) / self.m
+        vx1 = vx0 + ax * self.servo_twist_pub_timer_period
+        if abs(vx1) < self.pan_vel_min[0]:
+            vx1 = 0.0
+        elif vx1 > 0.0:
+            vx1 = min(round(vx1, 3), self.pan_vel_max[0])
+        else:
+            vx1 = max(round(vx1, 3), -self.pan_vel_max[0])
+        px1 = px0 + vx1 * self.servo_twist_pub_timer_period
+
+        py0 = self.pan_pos[1]
+        gy = self.pan_goal[1]
+        vy0 = self.pan_vel[1]
+        ay = (self.k_p * (gy - py0) - self.c_p * vy0) / self.m
+        vy1 = vy0 + ay * self.servo_twist_pub_timer_period
+        if abs(vy1) < self.pan_vel_min[1]:
+            vy1 = 0.0
+        elif vy1 > 0.0:
+            vy1 = min(round(vy1, 3), self.pan_vel_max[1])
+        else:
+            vy1 = max(round(vy1, 3), -self.pan_vel_max[1])
+        py1 = py0 + vy1 * self.servo_twist_pub_timer_period
+
+        py1 = round(py1, 3)
+
+        pz0 = self.zoom_pos
+        gz = self.zoom_goal
+        vz0 = self.zoom_vel
+        az = (self.k_p * (gz - pz0) - self.c_p * vz0) / self.m
+        vz1 = vz0 + az * self.servo_twist_pub_timer_period
+        if abs(vz1) < self.zoom_vel_min:
+            vz1 = 0.0
+        elif vz1 > 0.0:
+            vz1 = min(round(vz1, 3), self.zoom_vel_max)
+        else:
+            vz1 = max(round(vz1, 3), -self.zoom_vel_max)
+        pz1 = pz0 + vz1 * self.servo_twist_pub_timer_period
+        # Round to 3 decimal places
+
+        px1 = round(px1, 3)
+        py1 = round(py1, 3)
+        pz1 = round(pz1, 3)
+
+        self.pan_pos = (px1, py1)
+        self.pan_vel = (vx1, vy1)
+
+        self.zoom_pos = pz1
+        self.zoom_vel = vz1
+        self.zoom_goal = pz1
+
+        if abs(vx1) < 0.25:
+            vx1 = 0.0
+        if abs(vy1) < 0.25:
+            vy1 = 0.0
+        if abs(vz1) < 0.25:
+            vz1 = 0.0
+
+        return (-vx1, vz1, vy1)
+
     def get_dynamic_autofocus_velocity(self):
         # Compute dFV and ddFV
         if len(self.autofocus_data_dict['time']) == 1:
@@ -747,7 +804,7 @@ class RosThread(Node):
         self.autofocus_data_dict = {
             'metric': 'sobel',
             'buffer_size': 100,
-            'fv_max_ema': 1000,
+            'focus_value_max': 0,
             'time': [],
             'focus_value': [],
             'focus_value_ema': [],
@@ -761,7 +818,8 @@ class RosThread(Node):
             'focus_image': [focus_image],
             'position': [],
             'velocity': [],
-            'plot': image
+            'focus_value_plot': image,
+            'velocity_plot': image
         }
 
     def plot_focus_metrics(self):
@@ -769,23 +827,24 @@ class RosThread(Node):
         data = self.autofocus_data_dict['focus_value']
         # If data is shorter than the buffer size, pad with zeros
         if len(data) < self.autofocus_data_dict['buffer_size']:
-            data = data + [0] * \
-                (self.autofocus_data_dict['buffer_size'] - len(data))
+            data = [0] * \
+                (self.autofocus_data_dict['buffer_size'] - len(data)) + data
         # If data is longer than buffer size, truncate to last buffer_size elements
         elif len(data) > self.autofocus_data_dict['buffer_size']:
             data = data[-self.autofocus_data_dict['buffer_size']:]
 
-        # Update fv_max_ema
-        max_curr = 1.5*max(data)
-        if max_curr > self.autofocus_data_dict['fv_max_ema']:
-            self.autofocus_data_dict['fv_max_ema'] = max_curr
-        else:
-            self.autofocus_data_dict['fv_max_ema'] = self.autofocus_data_dict['fv_max_ema'] * \
-                self.focus_value_alpha + \
-                (1 - self.focus_value_alpha) * max_curr
+        # Update focus_value_max
+        max_curr = 1.1*max(data)
+        if max_curr > self.autofocus_data_dict['focus_value_max']:
+            self.autofocus_data_dict['focus_value_max'] = 1.1*max_curr
+        # else:
+        #     self.autofocus_data_dict['focus_value_max'] = self.autofocus_data_dict['focus_value_max'] * \
+        #         self.focus_value_alpha + \
+        #         (1 - self.focus_value_alpha) * max_curr
 
         # Scale data to fit within the bounding box
-        data = [100 * x / self.autofocus_data_dict['fv_max_ema'] for x in data]
+        data = [100 * x / self.autofocus_data_dict['focus_value_max']
+                for x in data]
 
         # Create a blank image
         height, width = 400, 800
@@ -808,7 +867,63 @@ class RosThread(Node):
             y2 = bbox_bottom_right[1]
             cv2.rectangle(image, (x1, y1), (x2, y2), (255, 255, 255), -1)
 
-        self.autofocus_data_dict['plot'] = image
+        self.autofocus_data_dict['focus_value_plot'] = image
+
+    def plot_twist_velocity(self):
+        # Plot twist velocity data for pan and zoom
+        data = self.autofocus_data_dict['velocity']
+
+        # If data is shorter than the buffer size, pad beginning with zeros
+        if len(data) < self.autofocus_data_dict['buffer_size']:
+            data = [(0., 0., 0.)] * \
+                (self.autofocus_data_dict['buffer_size'] - len(data)) + data
+        # If data is longer than buffer size, truncate to last buffer_size elements
+        elif len(data) > self.autofocus_data_dict['buffer_size']:
+            data = data[-self.autofocus_data_dict['buffer_size']:]
+
+        # Create a blank image
+        height, width = 400, 800
+        image = np.ones((height, width, 3), dtype=np.uint8) * 0
+
+        # Define the bounding box
+        margins = 50
+        bbox_height = 300
+        bbox_width = 700
+        bbox_top_left = (margins, margins)
+        bbox_bottom_right = (margins+bbox_width, margins+bbox_height)
+        cv2.rectangle(image, bbox_top_left,
+                      bbox_bottom_right, (255, 255, 255), 2)
+
+        # Plot zoom velocity data as vertical bars. 0 is in the middle of the bounding box
+        bar_width = (bbox_bottom_right[0] - bbox_top_left[0]) // len(data)
+        for i, v in enumerate(data):
+            vx = (bbox_height/2)*v[0]/self.pan_vel_max[0]
+            vy = (bbox_height/2)*v[1]/self.zoom_vel_max
+            vz = (bbox_height/2)*v[2]/self.pan_vel_max[1]
+
+            x1 = bbox_top_left[0] + i * bar_width
+            y1 = bbox_bottom_right[1] - int(vx) - int(bbox_height/2)
+            x2 = x1 + bar_width - 1
+            y2 = bbox_bottom_right[1] - int(bbox_height/2)
+            cv2.rectangle(image, (x1, y1), (x2, y2), (255, 0, 0), -1)
+
+            x1 = bbox_top_left[0] + i * bar_width
+            y1 = bbox_bottom_right[1] - int(vy) - int(bbox_height/2)
+            x2 = x1 + bar_width - 1
+            y2 = bbox_bottom_right[1] - int(bbox_height/2)
+            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), -1)
+
+            x1 = bbox_top_left[0] + i * bar_width
+            y1 = bbox_bottom_right[1] - int(vz) - int(bbox_height/2)
+            x2 = x1 + bar_width - 1
+            y2 = bbox_bottom_right[1] - int(bbox_height/2)
+            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 0, 255), -1)
+
+        # Draw horizontal line in the middle of the bounding box
+        cv2.line(image, (bbox_top_left[0], (bbox_top_left[1] + bbox_bottom_right[1]) // 2),
+                 (bbox_bottom_right[0], (bbox_top_left[1] + bbox_bottom_right[1]) // 2), (55, 55, 55), 2)
+
+        self.autofocus_data_dict['velocity_plot'] = image
 
     def save_focus_data(self, file_path):
         self.servo_state = SAVING_DATA
@@ -819,7 +934,8 @@ class RosThread(Node):
         # Remove image and focus_image from dictionary
         images = autofocus_data_dict.pop('image')
         focus_images = autofocus_data_dict.pop('focus_image')
-        plot = autofocus_data_dict.pop('plot')
+        focus_value_plot = autofocus_data_dict.pop('focus_value_plot')
+        velocity_plot = autofocus_data_dict.pop('velocity_plot')
         # Save the dictionary to a file
         with open(file_path + 'data.json', 'w') as f:
             json.dump(autofocus_data_dict, f)
@@ -837,6 +953,8 @@ class RosThread(Node):
         if self.servo_state == SAVING_DATA:
             return
 
+        self.start_measure()
+
         msg_time = msg.header.stamp
 
         macro_image = self.bridge.compressed_imgmsg_to_cv2(
@@ -853,18 +971,23 @@ class RosThread(Node):
         x1 = int(cx*width + w/2)
         y1 = int(cy*height + h/2)
 
+        t0 = time.time()
+
         focus_value, focus_image, cropped_image = self.focus_monitor.measure_focus(
             macro_image)
+
+        self.focus_measurement_time = time.time() - t0
 
         self.filtered_focus_value = self.focus_value_alpha * focus_value + \
             (1 - self.focus_value_alpha) * self.filtered_focus_value
 
         # Publish focus value
-        focus_msg = FocusValue(
-            header=msg.header, metric=self.focus_monitor.metric, data=self.filtered_focus_value, raw_data=focus_value)
-        self.focus_pub.publish(focus_msg)
+        # focus_msg = FocusValue(
+        #     header=msg.header, metric=self.focus_monitor.metric, data=self.filtered_focus_value, raw_data=focus_value)
+        # self.focus_pub.publish(focus_msg)
 
-        position = (0, 0, 0)
+        position = (0., 0., 0.)
+        velocity = (0., 0., 0.)
 
         # Get the transform from world to tool0
         try:
@@ -875,14 +998,19 @@ class RosThread(Node):
                         tf_wt.transform.translation.y, tf_wt.transform.translation.z)
         except tf2_ros.TransformException as ex:
             # Fallback to the latest available transform within a 1-second duration
-            tf_wt = self.tfBuffer.lookup_transform(
-                'world', 'tool0', rclpy.time.Time(), rclpy.time.Duration(seconds=1.0))
+            print(ex)
+            position = (0, 0, 0)
 
         # Get velocity based on servo state
-        if self.servo_state == DYNAMIC_AUTOFOCUS:
-            velocity = self.get_dynamic_autofocus_velocity(focus_msg)
-        else:
-            velocity = (0, 0, 0)
+        if self.servo_state == TELEOP:
+            velocity = self.get_teleop_velocity()
+        elif self.servo_state == DYNAMIC_AUTOFOCUS:
+            velocity = self.get_dynamic_autofocus_velocity()
+
+        # Set self.servo_twist based on velocity
+        self.servo_twist.twist.linear.x = velocity[0]
+        self.servo_twist.twist.linear.y = velocity[1]
+        self.servo_twist.twist.linear.z = velocity[2]
 
         # Convert Time msg to float value
         self.timestamp = msg_time.sec + msg_time.nanosec / 1e9
@@ -936,12 +1064,21 @@ class RosThread(Node):
         self.autofocus_data_dict['position'].append(position)
         self.autofocus_data_dict['velocity'].append(velocity)
 
-        self.plot_focus_metrics()
-
         cv2.rectangle(macro_image, (x0, y0), (x1, y1),
                       color=(255, 255, 255), thickness=4)
 
+        this_process_time = time.time()
+        macro_image_fps = 1 / (this_process_time - self.last_process_time)
+        self.macro_image_fps = 0.5 * macro_image_fps + \
+            0.5 * self.macro_image_fps
+        self.macro_image_fps = round(self.macro_image_fps, 2)
+        self.last_process_time = this_process_time
+
         self.macro_image = macro_image
+
+    def plot_timer_callback(self):
+        self.plot_focus_metrics()
+        self.plot_twist_velocity()
 
     def trigger_focus_experiment(self):
         future = self.focus_experiment_cli.call_async(
