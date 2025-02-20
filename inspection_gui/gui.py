@@ -708,6 +708,19 @@ class MyGui():
         horiz.add_child(self.viewpoint_stack)
         action_grid.add_child(horiz)
 
+        # Servo Toggle
+
+        def _on_servo_toggle(is_on):
+            if is_on:
+                self.ros_thread.start_servo()
+            else:
+                self.ros_thread.stop_servo()
+
+        self.servo_toggle = gui.ToggleSwitch("Servo")
+        self.servo_toggle.set_on_clicked(_on_servo_toggle)
+
+        # Move button
+
         self.move_button = gui.Button("Move")
 
         def _on_move_button_clicked():
@@ -716,6 +729,7 @@ class MyGui():
         self.move_button.set_on_clicked(_on_move_button_clicked)
 
         # Focus button
+
         self.focus_button = gui.Button("Focus")
         self.focus_button.toggleable = True
 
@@ -766,6 +780,8 @@ class MyGui():
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
 
         horiz.add_child(action_grid)
+        horiz.add_fixed(0.5 * em)
+        horiz.add_child(self.servo_toggle)
         horiz.add_fixed(0.5 * em)
         horiz.add_child(self.move_button)
         horiz.add_fixed(0.5 * em)
@@ -2546,6 +2562,13 @@ class MyGui():
         # self.log_list = self.ros_thread.read_log()
         # self.log_list.insert(0, "Log " + str(np.random.randint(1000)))
         # self.log_list = self.log_list[:1000]
+
+        # Check servo state
+        servo_state = self.ros_thread.servo_state
+        if servo_state == 0:
+            self.servo_toggle.is_on = False
+        else:
+            self.servo_toggle.is_on = True
 
         self.ros_log_text.set_items(self.log_list)
         self.ros_log_text.selected_index = 0
