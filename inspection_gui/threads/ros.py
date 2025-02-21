@@ -829,6 +829,22 @@ class RosThread(Node):
 
         return (-vx1, vz1, vy1)
 
+    def get_hillclimb_velocity(self):
+
+        # Check current position against first position. If distance is greater than self.autofocus_distance, return
+        if len(self.autofocus_data_dict['position']) > 1:
+            p0 = self.autofocus_data_dict['position'][0]
+            p1 = self.autofocus_data_dict['position'][-1]
+            distance = np.linalg.norm(np.array(p1) - np.array(p0))
+
+            if distance > self.autofocus_distance:
+                self.state = TELEOP
+                return (0., 0., 0., 0., 0., 0.), AUTOFOCUS_FAILURE
+
+        speed = 0.05
+
+        return (0., -speed, 0., 0., 0., 0.), AUTOFOCUS_IN_PROGRESS
+
     def get_dynamic_autofocus_velocity(self):
 
         # Check current position against first position. If distance is greater than self.autofocus_distance, return
@@ -1124,6 +1140,8 @@ class RosThread(Node):
                 self.save_focus_data()
             elif autofocus_status == AUTOFOCUS_FAILURE:
                 self.state = TELEOP
+        elif self.state == HILLCLIMB_AUTOFOCUS:
+            velocity = self.get_hillclimb_autofocus_velocity()
 
         # Set self.servo_twist based on velocity
         self.servo_twist.twist.linear.x = velocity[0]
