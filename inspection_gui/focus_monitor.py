@@ -1,3 +1,4 @@
+import time
 import cv2
 import numpy as np
 from scipy.stats import entropy
@@ -6,6 +7,7 @@ from scipy.stats import entropy
 class FocusMonitor:
 
     def __init__(self, cx, cy, w, h, metric='sobel'):
+        cv2.cuda.setDevice(0)
         self.cx = cx
         self.cy = cy
         self.w = w
@@ -16,11 +18,13 @@ class FocusMonitor:
         self.dict = {}
 
     def get_metrics():
-        return ['Variance of Sobel', 'Squared Gradient', 'Squared Sobel', 'FSWM', 'FFT', 'Mix Sobel', 'Sobel+Laplacian', 'combined_focus_measure', 'combined_focus_measure2']
+        return ['Variance of Sobel', 'Sobel CUDA',  'Squared Gradient', 'Squared Sobel', 'FSWM', 'FFT', 'Mix Sobel', 'Sobel+Laplacian', 'combined_focus_measure', 'combined_focus_measure2']
 
     def set_metric(self, name):
         if name == 'Variance of Sobel':
             self.metric = 'sobel'
+        elif name == 'Sobel CUDA':
+            self.metric = 'sobel_cuda'
         elif name == 'Squared Gradient':
             self.metric = 'squared_gradient'
         elif name == 'Squared Sobel':
@@ -57,6 +61,8 @@ class FocusMonitor:
 
         if self.metric == 'sobel':
             focus_value, focus_image = self.sobel(image_in)
+        elif self.metric == 'sobel_cuda':
+            focus_value, focus_image = self.sobel_cuda(image_in)
         elif self.metric == 'squared_gradient':
             focus_value, focus_image = self.squared_gradient(image_in)
         elif self.metric == 'squared_sobel':
@@ -78,6 +84,7 @@ class FocusMonitor:
         return focus_value, focus_image, image_in
 
     def sobel(self, image_in):
+        t0 = time.time()
 
         gray = cv2.cvtColor(image_in, cv2.COLOR_BGR2GRAY)
         sobel_image = cv2.Sobel(gray, ddepth=cv2.CV_16S, dx=1, dy=1, ksize=3)
@@ -86,7 +93,65 @@ class FocusMonitor:
         image_out = cv2.convertScaleAbs(sobel_image)
         image_out = cv2.cvtColor(image_out, cv2.COLOR_GRAY2RGB)
 
+        t1 = time.time()
+        # print('Sobel Time:', t1-t0)
+
         return sobel_value, image_out
+
+    def sobel_cuda(self, image_in):
+        t0 = time.time()
+
+        gpu_frame = cv2.cuda_GpuMat()
+        gpu_frame.upload(image_in)
+        gpu_gray = cv2.cuda.cvtColor(gpu_frame, cv2.COLOR_BGR2GRAY)
+
+        t1 = time.time()
+        print('Data Transfer to GPU Time:', t1-t0)
+
+        # Create and apply Sobel Filter
+        sobel_filter = cv2.cuda.createSobelFilter(
+            cv2.CV_8UC1, cv2.CV_16S, 1, 1, 3)
+        gpu_sobel_image = sobel_filter.apply(gpu_gray)
+
+        t2 = time.time()
+        print('CUDA Kernel Execution Time:', t2-t1)
+
+        sobel_image = gpu_sobel_image.download()
+
+        t3 = time.time()
+        print('Data Transfer from GPU Time:', t3-t2)
+
+        sobel_value = sobel_image.var()
+        image_out = sobel_image
+        image_out = cv2.convertScaleAbs(sobel_image)
+        image_out = cv2.cvtColor(image_out, cv2.COLOR_GRAY2RGB)
+
+        t4 = time.time()
+        print('Total CUDA Sobel Time:', t4-t0)
+
+        return sobel_value, image_out
+
+    # def sobel_cuda(self, image_in):
+    #     t0 = time.time()
+
+    #     gpu_frame = cv2.cuda_GpuMat()
+    #     gpu_frame.upload(image_in)
+    #     gpu_gray = cv2.cuda.cvtColor(gpu_frame, cv2.COLOR_BGR2GRAY)
+
+    #     # Create and apply Sobel Filter
+    #     sobel_filter = cv2.cuda.createSobelFilter(
+    #         cv2.CV_8UC1, cv2.CV_16S, 1, 1, 3)
+    #     gpu_sobel_image = sobel_filter.apply(gpu_gray)
+    #     sobel_image = gpu_sobel_image.download()
+    #     sobel_value = sobel_image.var()
+    #     image_out = sobel_image
+    #     image_out = cv2.convertScaleAbs(sobel_image)
+    #     image_out = cv2.cvtColor(image_out, cv2.COLOR_GRAY2RGB)
+
+    #     t1 = time.time()
+    #     print('CUDA Sobel Time:', t1-t0)
+
+    #     return sobel_value, image_out
 
     def squared_gradient(self, image_in):
         # Convert to grayscale

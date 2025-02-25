@@ -5,9 +5,11 @@ from open3d.visualization.rendering import MaterialRecord
 class Materials:
 
     background_color = [36/255, 37/255, 39/255, 1.0]
+    background_color = [222/255, 224/255, 228/255, 1.0]
 
     panel_color = gui.Color(50/255, 50/255, 50/255, 0.8)
     panel_color = gui.Color(30/255, 30/255, 30/255, 0.8)
+    panel_color = gui.Color(98/255, 100/255, 105/255, 0.8)
     header_footer_color = gui.Color(44/255, 54/255, 57/255, 0.8)
     header_footer_color = gui.Color(50/255, 50/255, 50/255, 0.8)
 
