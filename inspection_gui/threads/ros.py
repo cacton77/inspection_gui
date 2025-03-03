@@ -31,20 +31,24 @@ from inspection_msgs.msg import PixelStrip, FocusValue
 from inspection_srvs.srv import CaptureImage, MoveToPose, SetFocusMetric
 from std_msgs.msg import Float64, ColorRGBA, String
 from std_srvs.srv import Trigger
+from controller_manager_msgs.srv import SwitchController
 
 kv = 0.4
 
 OFF = 0
 ON = 1
 
-TELEOP = 0
+IDLE = 0
+AUTOFOCUS = 1
+SAVING_DATA = 2
+MOVING = 3
+RESETTING = 4
+CAPTURING_IMAGE = 5
+STARTING_SERVO = 6
+STOPPING_SERVO = 7
+
 DYNAMIC_AUTOFOCUS = 1
 HILLCLIMB_AUTOFOCUS = 2
-SAVING_DATA = 3
-MOVING_TO_POSE = 4
-RESETTING = 5
-CAPTURING_IMAGE = 6
-
 AUTOFOCUS_IN_PROGRESS = 0
 AUTOFOCUS_SUCCESS = 1
 AUTOFOCUS_FAILURE = 2
@@ -55,11 +59,10 @@ HILLCLIMB_AUTOFOCUS_SPEED = 0.1
 
 class RosThread(Node):
 
-    moving_to_viewpoint_flag = False
     last_move_successful = False
 
     servo_state = ON
-    state = TELEOP
+    state = IDLE
 
     focus_metric = 'sobel'
     focus_value_alpha = 0.5
@@ -84,9 +87,11 @@ class RosThread(Node):
     orbit_pos = (0., 0., 0.)
     orbit_vel = (0., 0., 0.)
     orbit_vel_min = (0.5, 0.5, 0.5)
-    orbit_scaling = (5., 5., 5.)
+    orbit_scaling = (1., 1., 1.)
     orbit_vel_max = (1., 1., 1.)
     orbit_goal = (0., 0., 0.)
+
+    velocity = (0., 0., 0., 0., 0., 0.)
 
     zoom_pos = 0.0
     zoom_vel = 0.0
@@ -169,7 +174,7 @@ class RosThread(Node):
         # Generate self.autofocus_data_dict
         self.reset_autofocus_data()
 
-        self.focus_state = TELEOP
+        self.focus_state = IDLE
         focus_cb_group = MutuallyExclusiveCallbackGroup()
 
         def change_metric_callback(request, response):
@@ -358,6 +363,13 @@ class RosThread(Node):
 
         servo_cb_group = MutuallyExclusiveCallbackGroup()
 
+        self.controller_manager_cli = self.create_client(
+            SwitchController, '/controller_manager/switch_controller', callback_group=servo_cb_group)
+        if not self.controller_manager_cli.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('controller manager service not available, waiting again...')
+        else:
+            self.get_logger().info('Connected to controller manager!')
+
         # Call /servo_node/start_servo service
         self.get_logger().info('Connecting to servo node...')
         self.stop_servo_cli = self.create_client(
@@ -375,6 +387,8 @@ class RosThread(Node):
         else:
             self.get_logger().info('Connected to servo node!')
             self.start_servo()
+
+        self.start_servo_control()
 
         self.servo_twist_pub = self.create_publisher(
             TwistStamped, '/servo_node/delta_twist_cmds', 10)
@@ -404,9 +418,99 @@ class RosThread(Node):
             self.get_logger().info('Connected to moveit path planning service!')
 
         # PLOTTING ######################################################################
-        self.plot_timer_period = 0.1
+        self.plot_timer_period = 0.05
         self.plot_timer = self.create_timer(
             self.plot_timer_period, self.plot_timer_callback)
+
+        # MAIN LOOP #####################################################################
+
+        main_callback_group = MutuallyExclusiveCallbackGroup()
+
+        main_loop_period = 0.01
+        self.main_loop_timer = self.create_timer(
+            main_loop_period, self.main_loop, callback_group=main_callback_group)
+
+    def main_loop(self):
+        # Check state
+        print('State:', self.state)
+        if self.state == IDLE:
+            self.velocity = self.get_teleop_velocity()
+        elif self.state == AUTOFOCUS:
+            if self.autofocus_type == DYNAMIC_AUTOFOCUS:
+                self.velocity, autofocus_status = self.get_dynamic_autofocus_velocity()
+        #     elif self.autofocus_type == HILLCLIMB_AUTOFOCUS:
+        #         velocity, autofocus_status = self.get_hillclimb_autofocus_velocity()
+        #     if autofocus_status == AUTOFOCUS_SUCCESS:
+        #         tf_max = np.eye(4)
+        #         rotation = R.from_quat(
+        #             self.autofocus_data_dict['orientation_max'])
+        #         rotation_matrix = rotation.as_matrix()
+        #         tf_max[:3, :3] = rotation_matrix
+        #         tf_max[:3, 3] = self.autofocus_data_dict['position_max']
+
+        #         self.state = MOVING
+        #         self.move_to_pose(tf_max, 'world', next_state=SAVING)
+        #         # State will be set to IDLE or SAVING in move_to_pose_callback
+        elif self.state == STOPPING_SERVO:
+            pass
+        elif self.state == STARTING_SERVO:
+            pass
+        elif self.state == MOVING:
+            pass
+        # elif self.state == MOVING:
+        #     print('Moving...')
+        # elif self.state == CAPTURING:
+        #     pass
+        # elif self.state == SAVING:
+        #     self.save_focus_data()
+        #     self.state = RESETTING
+        # elif self.state == RESETTING:
+        #     self.reset_autofocus_data()
+        #     self.state = IDLE
+
+        # # Get velocity based on servo state
+        # if self.state == IDLE:
+        #     velocity = self.get_teleop_velocity()
+        # elif self.state == DYNAMIC_AUTOFOCUS:
+        #     velocity, autofocus_status = self.get_dynamic_autofocus_velocity()
+        #     if autofocus_status == AUTOFOCUS_SUCCESS:
+        #         tf_max = np.eye(4)
+        #         rotation = R.from_quat(
+        #             self.autofocus_data_dict['orientation_max'])
+        #         rotation_matrix = rotation.as_matrix()
+        #         tf_max[:3, :3] = rotation_matrix
+        #         tf_max[:3, 3] = self.autofocus_data_dict['position_max']
+        #         self.move_to_pose(tf_max, 'world', next_state=SAVING)
+        #     elif autofocus_status == AUTOFOCUS_FAILURE:
+        #         tf_original = np.eye(4)
+        #         rotation = R.from_quat(
+        #             self.autofocus_data_dict['orientation'][0])
+        #         rotation_matrix = rotation.as_matrix()
+        #         tf_original[:3, :3] = rotation_matrix
+        #         tf_original[:3, 3] = self.autofocus_data_dict['position'][0]
+        #         self.move_to_pose(tf_original, 'world')
+        # elif self.state == HILLCLIMB_AUTOFOCUS:
+        #     velocity, autofocus_status = self.get_hillclimb_autofocus_velocity()
+        #     if autofocus_status == AUTOFOCUS_SUCCESS:
+        #         tf_max = np.eye(4)
+        #         rotation = R.from_quat(
+        #             self.autofocus_data_dict['orientation_max'])
+        #         rotation_matrix = rotation.as_matrix()
+        #         tf_max[:3, :3] = rotation_matrix
+        #         tf_max[:3, 3] = self.autofocus_data_dict['position_max']
+        #         self.move_to_pose(tf_max, 'world')
+        #         self.save_focus_data()
+        #     elif autofocus_status == AUTOFOCUS_FAILURE:
+        #         tf_original = np.eye(4)
+        #         rotation = R.from_quat(
+        #             self.autofocus_data_dict['orientation'][0])
+        #         rotation_matrix = rotation.as_matrix()
+        #         tf_original[:3, :3] = rotation_matrix
+        #         tf_original[:3, 3] = self.autofocus_data_dict['position'][0]
+        #         self.move_to_pose(tf_original, 'world')
+        #         self.reset_autofocus_data()
+
+        # Set self.servo_twist based on velocity
 
     def start_measure(self):
         self.t0 = time.time()
@@ -414,25 +518,100 @@ class RosThread(Node):
     def stop_measure(self):
         self.get_logger().info(f'Measurement time: {time.time() - self.t0}')
 
+    def start_servo_control(self):
+        self.state = STARTING_SERVO
+        self.activate_forward_position_controller()
+
+    def stop_servo_control(self):
+        self.state = STOPPING_SERVO
+        self.activate_joint_trajectory_controller()
+
+    def activate_forward_position_controller(self):
+        self.state = STARTING_SERVO
+        req = SwitchController.Request()
+        req.start_controllers = ['forward_position_controller']
+        req.stop_controllers = ['joint_trajectory_controller']
+        self.get_logger().info('Activating forward position controller...')
+        future = self.controller_manager_cli.call_async(req)
+        future.add_done_callback(
+            self.activate_forward_position_controller_callback)
+
+    def activate_forward_position_controller_callback(self, future):
+        try:
+            resp = future.result()
+            self.get_logger().info('Activate forward position controller response: %s' % resp.ok)
+        except Exception as e:
+            self.get_logger().info(
+                'Service call failed %r' % (e,))
+
+        if resp.ok:
+            self.start_servo()
+
     def start_servo(self):
         # Call /servo_node/start_servo service
         req = Trigger.Request()
         self.get_logger().info('Sending start servo request...')
         future = self.start_servo_cli.call_async(req)
-        # rclpy.spin_until_future_complete(self, future)
-        # resp = future.result()
+        future.add_done_callback(self.start_servo_callback)
         self.get_logger().info('Servo node started!')
+
+    def start_servo_callback(self, future):
+        try:
+            resp = future.result()
+            self.get_logger().info('Start servo response: %s' % resp.success)
+        except Exception as e:
+            self.get_logger().info(
+                'Service call failed %r' % (e,))
+
         self.servo_state = ON
+        self.state = IDLE
+
+    def activate_joint_trajectory_controller(self):
+        self.state = STOPPING_SERVO
+
+        req = SwitchController.Request()
+        req.start_controllers = ['joint_trajectory_controller']
+        req.stop_controllers = ['forward_position_controller']
+        self.get_logger().info('Activating joint trajectory controller...')
+
+        future = self.controller_manager_cli.call_async(req)
+        future.add_done_callback(
+            self.activate_joint_trajectory_controller_callback)
+
+    def activate_joint_trajectory_controller_callback(self, future):
+        try:
+            resp = future.result()
+            self.get_logger().info('Activate joint trajectory controller response: %s' % resp.ok)
+        except Exception as e:
+            self.get_logger().info(
+                'Service call failed %r' % (e,))
+
+        if resp.ok:
+            self.stop_servo()
+        else:
+            self.state = IDLE
 
     def stop_servo(self):
         # Call /servo_node/stop_servo service
         req = Trigger.Request()
         self.get_logger().info('Sending stop servo request...')
+
         future = self.stop_servo_cli.call_async(req)
-        # rclpy.spin_until_future_complete(self, future)
-        # resp = future.result()
+        future.add_done_callback(self.stop_servo_callback)
+
         self.get_logger().info('Servo node stopped!')
         self.servo_state = OFF
+
+    def stop_servo_callback(self, future):
+        try:
+            resp = future.result()
+            self.get_logger().info('Stop servo response: %s' % resp.success)
+        except Exception as e:
+            self.get_logger().info(
+                'Service call failed %r' % (e,))
+
+        self.servo_state = OFF
+        self.state = MOVING
 
     def align_z_axis_down(self, position, orientation_quat):
         # Convert the quaternion to a rotation matrix
@@ -491,14 +670,15 @@ class RosThread(Node):
             self.start_autofocus(HILLCLIMB_AUTOFOCUS)
 
     def start_autofocus(self, type):
+        self.state = RESETTING
         self.reset_autofocus_data()
-        self.state = type
+        self.state = AUTOFOCUS
 
     def move_to_pose(self, tf, frame_id):
-        self.moving_to_viewpoint = True
-
-        self.state = MOVING_TO_POSE
-        self.stop_servo()
+        self.stop_servo_control()
+        while not self.state == MOVING:
+            self.get_logger().info('Waiting for state to be MOVING...')
+            time.sleep(0.1)
 
         # Turn homogeneous tf into position and quaternion
         pose_stamped = PoseStamped()
@@ -513,14 +693,14 @@ class RosThread(Node):
         pose_stamped.pose.orientation.w = q[0]
         self.target_pose_publisher.publish(pose_stamped)
 
-        self.state = MOVING_TO_POSE
+        self.state = MOVING
         req = MoveToPose.Request()
         req.target_pose = pose_stamped
         self.get_logger().info('Sending move to pose request...')
+
         future = self.move_to_pose_cli.call_async(req)
         future.add_done_callback(self.move_to_pose_callback)
-        # rclpy.spin_until_future_complete(self, future)
-        # resp = future.result()
+
         self.get_logger().info('Move to pose request complete!')
 
     def move_to_pose_callback(self, future):
@@ -531,9 +711,7 @@ class RosThread(Node):
             self.get_logger().info(
                 'Service call failed %r' % (e,))
 
-        self.start_servo()
-        self.state = TELEOP
-        self.last_move_successful = resp.done
+        self.start_servo_control()
 
     def pixels_to(self, rgb_list):
         pixel_colors = []
@@ -564,7 +742,7 @@ class RosThread(Node):
             self.get_logger().info(
                 'Service call failed %r' % (e,))
 
-        self.state = TELEOP
+        self.state = IDLE
 
     def get_tf_frames(self):
         return self.tfBuffer.all_frames_as_yaml()
@@ -687,14 +865,38 @@ class RosThread(Node):
         self.state = DYNAMIC_AUTOFOCUS
 
     def autofocus_off(self):
-        self.state = TELEOP
+        self.state = IDLE
 
     def servo_twist_pub_timer_callback(self):
         # Publish servo twist
-        if self.state == MOVING_TO_POSE:
+        if self.state == MOVING:
             return
-        self.servo_twist.header.stamp = self.get_clock().now().to_msg()
+
+        self.servo_twist.twist.linear.x = self.velocity[0]
+        self.servo_twist.twist.linear.y = self.velocity[1]
+        self.servo_twist.twist.linear.z = self.velocity[2]
+        self.servo_twist.twist.angular.x = self.velocity[3]
+        self.servo_twist.twist.angular.y = self.velocity[4]
+        self.servo_twist.twist.angular.z = self.velocity[5]
+
+        msg_time = self.get_clock().now().to_msg()
+        self.servo_twist.header.stamp = msg_time
         self.servo_twist_pub.publish(self.servo_twist)
+
+        timestamp = msg_time.sec + msg_time.nanosec / 1e9
+
+        # If data length is greater than max length, remove first element
+
+        if self.state == DYNAMIC_AUTOFOCUS or self.state == HILLCLIMB_AUTOFOCUS:
+            pass
+        elif len(self.autofocus_data_dict['velocity_data']['time']) > self.autofocus_data_dict['buffer_size']:
+            self.autofocus_data_dict['velocity_data']['time'].pop(0)
+            self.autofocus_data_dict['velocity_data']['velocity'].pop(0)
+
+        # Add time and velocity data to dictionary
+        self.autofocus_data_dict['velocity_data']['time'].append(timestamp)
+        self.autofocus_data_dict['velocity_data']['velocity'].append(
+            self.velocity)
 
     def generate_point_cloud(self):
         new_pcd = o3d.geometry.PointCloud()
@@ -760,8 +962,8 @@ class RosThread(Node):
 
     def get_teleop_velocity(self):
         # Get last velocity
-        if len(self.autofocus_data_dict['velocity']) > 0:
-            v_last = self.autofocus_data_dict['velocity'][-1]
+        if len(self.autofocus_data_dict['velocity_data']['velocity']) > 0:
+            v_last = self.autofocus_data_dict['velocity_data']['velocity'][-1]
         else:
             v_last = (0., 0., 0., 0., 0., 0.)
         # Round to 3 decimal places
@@ -864,7 +1066,7 @@ class RosThread(Node):
             distance = np.linalg.norm(np.array(p1) - np.array(p0))
 
             if distance > self.autofocus_distance:
-                self.state = TELEOP
+                self.state = IDLE
                 return (0., 0., 0., 0., 0., 0.), AUTOFOCUS_SUCCESS
 
         speed = HILLCLIMB_AUTOFOCUS_SPEED
@@ -880,7 +1082,7 @@ class RosThread(Node):
             distance = np.linalg.norm(np.array(p1) - np.array(p0))
 
             if distance > self.autofocus_distance:
-                self.state = TELEOP
+                self.state = IDLE
                 return (0., 0., 0., 0., 0., 0.), AUTOFOCUS_FAILURE
 
         speed = DYNAMIC_AUTOFOCUS_SPEED
@@ -923,7 +1125,7 @@ class RosThread(Node):
             elif self.autofocus_data_dict['dFV'][-2] > 2 and dFV < 2 and smooth_ddFV < -0.1:
                 speed = 0
                 print('Completed autofocus')
-                self.state = TELEOP
+                self.state = IDLE
                 return (0., 0., 0., 0., 0., 0.), AUTOFOCUS_SUCCESS
             else:
                 speed = kv/ratio
@@ -937,7 +1139,6 @@ class RosThread(Node):
         return (0., -speed, 0., 0., 0., 0.), AUTOFOCUS_IN_PROGRESS
 
     def reset_autofocus_data(self):
-        self.state = RESETTING
 
         # Create a blank image
         height, width = 400, 800
@@ -978,12 +1179,17 @@ class RosThread(Node):
             'focus_image': [image],
             'position': [],
             'orientation': [],
-            'velocity': [],
+            'velocity_data': {'time': [], 'velocity': []},
             'focus_value_plot': image,
             'velocity_plot': image
         }
 
-        self.state = TELEOP
+    def plot_timer_callback(self):
+        focus_value_plot = self.plot_focus_metrics()
+        velocity_plot = self.plot_twist_velocity()
+
+        self.autofocus_data_dict['focus_value_plot'] = focus_value_plot
+        self.autofocus_data_dict['velocity_plot'] = velocity_plot
 
     def plot_focus_metrics(self):
         # Plot focus metric data
@@ -997,7 +1203,7 @@ class RosThread(Node):
             data = data[-self.autofocus_data_dict['buffer_size']:]
 
         # Set the maximum value of the plot
-        max_curr = 1.1*max(data)
+        max_curr = self.autofocus_data_dict['focus_value_max']
         if max_curr == 0:
             max_curr = 1
 
@@ -1021,16 +1227,16 @@ class RosThread(Node):
             x1 = bbox_top_left[0] + i * bar_width
             y1 = bbox_bottom_right[1] - \
                 int((bbox_bottom_right[1] -
-                    bbox_top_left[1]) * (value / 100))
+                     bbox_top_left[1]) * (value / 100))
             x2 = x1 + bar_width - 1
             y2 = bbox_bottom_right[1]
             cv2.rectangle(image, (x1, y1), (x2, y2), (255, 255, 255), -1)
 
-        self.autofocus_data_dict['focus_value_plot'] = image
+        return image
 
     def plot_twist_velocity(self):
         # Plot twist velocity data for pan and zoom
-        data = self.autofocus_data_dict['velocity']
+        data = self.autofocus_data_dict['velocity_data']['velocity']
 
         # If data is shorter than the buffer size, pad beginning with zeros
         if len(data) < self.autofocus_data_dict['buffer_size']:
@@ -1082,10 +1288,9 @@ class RosThread(Node):
         cv2.line(image, (bbox_top_left[0], (bbox_top_left[1] + bbox_bottom_right[1]) // 2),
                  (bbox_bottom_right[0], (bbox_top_left[1] + bbox_bottom_right[1]) // 2), (55, 55, 55), 2)
 
-        self.autofocus_data_dict['velocity_plot'] = image
+        return image
 
     def save_focus_data(self):
-        self.state = SAVING_DATA
 
         # Copy the dictionary to a new dictionary
         autofocus_data_dict = self.autofocus_data_dict.copy()
@@ -1112,10 +1317,6 @@ class RosThread(Node):
         for i in range(len(images)):
             out.write(images[i])
         out.release()
-
-        self.reset_autofocus_data()
-
-        self.state = TELEOP
 
     def compressed_image_callback(self, msg):
         if self.state == RESETTING:
@@ -1181,58 +1382,6 @@ class RosThread(Node):
             self.autofocus_data_dict['position_max'] = position
             self.autofocus_data_dict['orientation_max'] = orientation
 
-        # Get velocity based on servo state
-        if self.state == TELEOP:
-            velocity = self.get_teleop_velocity()
-        elif self.state == DYNAMIC_AUTOFOCUS:
-            velocity, autofocus_status = self.get_dynamic_autofocus_velocity()
-            if autofocus_status == AUTOFOCUS_SUCCESS:
-                tf_max = np.eye(4)
-                rotation = R.from_quat(
-                    self.autofocus_data_dict['orientation_max'])
-                rotation_matrix = rotation.as_matrix()
-                tf_max[:3, :3] = rotation_matrix
-                tf_max[:3, 3] = self.autofocus_data_dict['position_max']
-                self.move_to_pose(tf_max, 'world')
-                self.save_focus_data()
-            elif autofocus_status == AUTOFOCUS_FAILURE:
-                tf_original = np.eye(4)
-                rotation = R.from_quat(
-                    self.autofocus_data_dict['orientation'][0])
-                rotation_matrix = rotation.as_matrix()
-                tf_original[:3, :3] = rotation_matrix
-                tf_original[:3, 3] = self.autofocus_data_dict['position'][0]
-                self.move_to_pose(tf_original, 'world')
-                self.reset_autofocus_data()
-        elif self.state == HILLCLIMB_AUTOFOCUS:
-            velocity, autofocus_status = self.get_hillclimb_autofocus_velocity()
-            if autofocus_status == AUTOFOCUS_SUCCESS:
-                tf_max = np.eye(4)
-                rotation = R.from_quat(
-                    self.autofocus_data_dict['orientation_max'])
-                rotation_matrix = rotation.as_matrix()
-                tf_max[:3, :3] = rotation_matrix
-                tf_max[:3, 3] = self.autofocus_data_dict['position_max']
-                self.move_to_pose(tf_max, 'world')
-                self.save_focus_data()
-            elif autofocus_status == AUTOFOCUS_FAILURE:
-                tf_original = np.eye(4)
-                rotation = R.from_quat(
-                    self.autofocus_data_dict['orientation'][0])
-                rotation_matrix = rotation.as_matrix()
-                tf_original[:3, :3] = rotation_matrix
-                tf_original[:3, 3] = self.autofocus_data_dict['position'][0]
-                self.move_to_pose(tf_original, 'world')
-                self.reset_autofocus_data()
-
-        # Set self.servo_twist based on velocity
-        self.servo_twist.twist.linear.x = velocity[0]
-        self.servo_twist.twist.linear.y = velocity[1]
-        self.servo_twist.twist.linear.z = velocity[2]
-        self.servo_twist.twist.angular.x = velocity[3]
-        self.servo_twist.twist.angular.y = velocity[4]
-        self.servo_twist.twist.angular.z = velocity[5]
-
         # Convert Time msg to float value
         self.timestamp = msg_time.sec + msg_time.nanosec / 1e9
 
@@ -1272,7 +1421,6 @@ class RosThread(Node):
                 self.autofocus_data_dict['focus_value'].pop(0)
                 self.autofocus_data_dict['position'].pop(0)
                 self.autofocus_data_dict['orientation'].pop(0)
-                self.autofocus_data_dict['velocity'].pop(0)
                 self.autofocus_data_dict['image'].pop(0)
                 self.autofocus_data_dict['focus_image'].pop(0)
 
@@ -1285,7 +1433,6 @@ class RosThread(Node):
         self.autofocus_data_dict['focus_image'].append(focus_image)
         self.autofocus_data_dict['position'].append(position)
         self.autofocus_data_dict['orientation'].append(orientation)
-        self.autofocus_data_dict['velocity'].append(velocity)
 
         cv2.rectangle(macro_image, (x0, y0), (x1, y1),
                       color=(255, 255, 255), thickness=4)
@@ -1298,10 +1445,6 @@ class RosThread(Node):
         self.last_process_time = this_process_time
 
         self.macro_image = macro_image
-
-    def plot_timer_callback(self):
-        self.plot_focus_metrics()
-        self.plot_twist_velocity()
 
     def trigger_focus_experiment(self):
         future = self.focus_experiment_cli.call_async(

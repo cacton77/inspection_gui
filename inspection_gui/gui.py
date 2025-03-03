@@ -712,9 +712,9 @@ class MyGui():
 
         def _on_servo_toggle(is_on):
             if is_on:
-                self.ros_thread.start_servo()
+                self.ros_thread.start_servo_control()
             else:
-                self.ros_thread.stop_servo()
+                self.ros_thread.stop_servo_control()
 
         self.servo_toggle = gui.ToggleSwitch("Servo")
         self.servo_toggle.set_on_clicked(_on_servo_toggle)
