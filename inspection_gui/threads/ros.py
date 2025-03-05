@@ -33,7 +33,7 @@ from std_msgs.msg import Float64, ColorRGBA, String
 from std_srvs.srv import Trigger
 from controller_manager_msgs.srv import SwitchController
 
-kv = 0.4
+kv = 0.3
 
 OFF = 0
 ON = 1
@@ -53,8 +53,9 @@ AUTOFOCUS_IN_PROGRESS = 0
 AUTOFOCUS_SUCCESS = 1
 AUTOFOCUS_FAILURE = 2
 
-DYNAMIC_AUTOFOCUS_SPEED = 0.01
-HILLCLIMB_AUTOFOCUS_SPEED = 0.1
+# DYNAMIC_AUTOFOCUS_SPEED = 0.01
+# HILLCLIMB_AUTOFOCUS_SPEED = 0.1
+AUTOFOCUS_SPEED = 0.1
 
 
 class RosThread(Node):
@@ -90,6 +91,12 @@ class RosThread(Node):
     orbit_scaling = (1., 1., 1.)
     orbit_vel_max = (1., 1., 1.)
     orbit_goal = (0., 0., 0.)
+
+    home_position = (0., 0., 0.)
+    home_orientation = (0., 0., 0., 1.)
+
+    position = (0., 0., 0.)
+    orientation = (0., 0., 0., 1.)
 
     velocity = (0., 0., 0., 0., 0., 0.)
 
@@ -432,30 +439,39 @@ class RosThread(Node):
 
     def main_loop(self):
         # Check state
-        print('State:', self.state)
         if self.state == IDLE:
             self.velocity = self.get_teleop_velocity()
         elif self.state == AUTOFOCUS:
-            if self.autofocus_type == DYNAMIC_AUTOFOCUS:
-                self.velocity, autofocus_status = self.get_dynamic_autofocus_velocity()
-        #     elif self.autofocus_type == HILLCLIMB_AUTOFOCUS:
-        #         velocity, autofocus_status = self.get_hillclimb_autofocus_velocity()
-        #     if autofocus_status == AUTOFOCUS_SUCCESS:
-        #         tf_max = np.eye(4)
-        #         rotation = R.from_quat(
-        #             self.autofocus_data_dict['orientation_max'])
-        #         rotation_matrix = rotation.as_matrix()
-        #         tf_max[:3, :3] = rotation_matrix
-        #         tf_max[:3, 3] = self.autofocus_data_dict['position_max']
+            autofocus_status = AUTOFOCUS_IN_PROGRESS
 
-        #         self.state = MOVING
-        #         self.move_to_pose(tf_max, 'world', next_state=SAVING)
-        #         # State will be set to IDLE or SAVING in move_to_pose_callback
+            # Get velocity based on autofocus type
+            if self.autofocus_type == 'dynamic':
+                self.velocity, autofocus_status = self.get_dynamic_autofocus_velocity()
+            elif self.autofocus_type == 'hillclimb':
+                self.velocity, autofocus_status = self.get_hillclimb_autofocus_velocity()
+
+            # If autofocus is successful, move to max focus position
+            if autofocus_status == AUTOFOCUS_SUCCESS:
+                self.get_logger().info('Autofocus successful!')
+                tf_max = np.eye(4)
+                rotation = R.from_quat(
+                    self.autofocus_data_dict['orientation_max'])
+                rotation_matrix = rotation.as_matrix()
+                tf_max[:3, :3] = rotation_matrix
+                tf_max[:3, 3] = self.autofocus_data_dict['position_max']
+
+                self.move_to_pose(tf_max, 'world')
+            elif autofocus_status == AUTOFOCUS_FAILURE:
+                self.get_logger().info('Autofocus failed!')
+                self.reset_autofocus_data()
+
         elif self.state == STOPPING_SERVO:
             pass
         elif self.state == STARTING_SERVO:
             pass
         elif self.state == MOVING:
+            pass
+        elif self.state == RESETTING:
             pass
         # elif self.state == MOVING:
         #     print('Moving...')
@@ -661,15 +677,31 @@ class RosThread(Node):
         elif self.joy_buttons[0] == 1:
             # Autofocus
             self.autofocus_type = 'dynamic'
-            self.start_autofocus(DYNAMIC_AUTOFOCUS)
+            if self.state == IDLE:
+                self.start_autofocus()
         elif self.joy_buttons[1] == 1:
             self.capture_image(self.last_data_path + 'image.jpg')
         elif self.joy_buttons[2] == 1:
             # Autofocus
             self.autofocus_type = 'hillclimb'
-            self.start_autofocus(HILLCLIMB_AUTOFOCUS)
+            if self.state == IDLE:
+                self.start_autofocus()
+        elif self.joy_buttons[6]:
+            self.set_home_position()
+        elif self.joy_buttons[8]:
+            self.go_to_home_position()
 
-    def start_autofocus(self, type):
+    def set_home_position(self):
+        self.home_position = self.position
+        self.home_orientation = self.orientation
+
+    def go_to_home_position(self):
+        tf = np.eye(4)
+        tf[:3, 3] = self.home_position
+        tf[:3, :3] = R.from_quat(self.home_orientation).as_matrix()
+        self.move_to_pose(tf, 'world')
+
+    def start_autofocus(self):
         self.state = RESETTING
         self.reset_autofocus_data()
         self.state = AUTOFOCUS
@@ -1069,7 +1101,7 @@ class RosThread(Node):
                 self.state = IDLE
                 return (0., 0., 0., 0., 0., 0.), AUTOFOCUS_SUCCESS
 
-        speed = HILLCLIMB_AUTOFOCUS_SPEED
+        speed = AUTOFOCUS_SPEED
 
         return (0., -speed, 0., 0., 0., 0.), AUTOFOCUS_IN_PROGRESS
 
@@ -1085,7 +1117,7 @@ class RosThread(Node):
                 self.state = IDLE
                 return (0., 0., 0., 0., 0., 0.), AUTOFOCUS_FAILURE
 
-        speed = DYNAMIC_AUTOFOCUS_SPEED
+        speed = AUTOFOCUS_SPEED
 
         if len(self.autofocus_data_dict['time']) == 0:
             ratio = 0
@@ -1121,14 +1153,17 @@ class RosThread(Node):
 
             # Calculate speed
             if smooth_ddFV < -0.1 and dFV > 0:
-                speed = kv*(ratio-0.5)
+                speed = kv/ratio
             elif self.autofocus_data_dict['dFV'][-2] > 2 and dFV < 2 and smooth_ddFV < -0.1:
                 speed = 0
                 print('Completed autofocus')
                 self.state = IDLE
                 return (0., 0., 0., 0., 0., 0.), AUTOFOCUS_SUCCESS
             else:
-                speed = kv/ratio
+                speed = kv*(ratio-0.5)
+
+            # Bound speed between -1 and 1
+            speed = min(max(speed, -1.), 1.)
 
         # Update data dictionary
         self.autofocus_data_dict['ratio'].append(ratio)
@@ -1184,7 +1219,14 @@ class RosThread(Node):
             'velocity_plot': image
         }
 
+        self.state = IDLE
+
     def plot_timer_callback(self):
+        if self.state == RESETTING:
+            return
+        elif len(self.autofocus_data_dict['focus_value']) <= 1:
+            return
+
         focus_value_plot = self.plot_focus_metrics()
         velocity_plot = self.plot_twist_velocity()
 
@@ -1194,6 +1236,7 @@ class RosThread(Node):
     def plot_focus_metrics(self):
         # Plot focus metric data
         data = self.autofocus_data_dict['focus_value']
+
         # If data is shorter than the buffer size, pad with zeros
         if len(data) < self.autofocus_data_dict['buffer_size']:
             data = [0] * \
@@ -1201,6 +1244,9 @@ class RosThread(Node):
         # If data is longer than buffer size, truncate to last buffer_size elements
         elif len(data) > self.autofocus_data_dict['buffer_size']:
             data = data[-self.autofocus_data_dict['buffer_size']:]
+
+        # Current focus value
+        focus_value_curr = data[-1]
 
         # Set the maximum value of the plot
         max_curr = self.autofocus_data_dict['focus_value_max']
@@ -1232,6 +1278,19 @@ class RosThread(Node):
             y2 = bbox_bottom_right[1]
             cv2.rectangle(image, (x1, y1), (x2, y2), (255, 255, 255), -1)
 
+        # Draw a box with white border and black transparent fill in the upper left corner of the image
+        margin = 10
+        cv2.rectangle(image, (50+margin, 50+margin),
+                      (300+margin, 150+margin), (0, 0, 0), -1)
+        cv2.rectangle(image, (50+margin, 50+margin),
+                      (300+margin, 150+margin), (255, 255, 255), 2)
+        # Add text to the box. First line "FV: " followed by the last focus value
+        cv2.putText(image, 'FV: ' + str(int(focus_value_curr)),
+                    (60+margin, 90+margin), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+        # Add text to the box. Second line "FV MAX: " followed by the max focus value
+        cv2.putText(image, 'FV MAX: ' + str(int(self.autofocus_data_dict['focus_value_max'])),
+                    (60+margin, 130+margin), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
+
         return image
 
     def plot_twist_velocity(self):
@@ -1256,8 +1315,6 @@ class RosThread(Node):
         bbox_width = 700
         bbox_top_left = (margins, margins)
         bbox_bottom_right = (margins+bbox_width, margins+bbox_height)
-        cv2.rectangle(image, bbox_top_left,
-                      bbox_bottom_right, (255, 255, 255), 2)
 
         # Plot zoom velocity data as vertical bars. 0 is in the middle of the bounding box
         bar_width = (bbox_bottom_right[0] - bbox_top_left[0]) // len(data)
@@ -1287,6 +1344,26 @@ class RosThread(Node):
         # Draw horizontal line in the middle of the bounding box
         cv2.line(image, (bbox_top_left[0], (bbox_top_left[1] + bbox_bottom_right[1]) // 2),
                  (bbox_bottom_right[0], (bbox_top_left[1] + bbox_bottom_right[1]) // 2), (55, 55, 55), 2)
+
+        # Draw a box with white border and black transparent fill in the upper left corner of the image
+        margin = 10
+        cv2.rectangle(image, (50+margin, 50+margin),
+                      (185+margin, 195+margin), (0, 0, 0), -1)
+        cv2.rectangle(image, (50+margin, 50+margin),
+                      (180+margin, 195+margin), (255, 255, 255), 2)
+        # Add text to the box. First line "X: " followed by the  x velocity
+        cv2.putText(image, 'X: ' + str(round(self.velocity[0], 3)),
+                    (60+margin, 90+margin), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2, cv2.LINE_AA)
+        # Add text to the box. Second line "Y: " followed by the y velocity
+        cv2.putText(image, 'Y: ' + str(round(self.velocity[1], 3)),
+                    (60+margin, 130+margin), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+        # Add text to the box. Third line "Z: " followed by the z velocity
+        cv2.putText(image, 'Z: ' + str(round(self.velocity[2], 3)),
+                    (60+margin, 170+margin), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
+
+        # Draw bounding box last so it is on top of the bars
+        cv2.rectangle(image, bbox_top_left,
+                      bbox_bottom_right, (255, 255, 255), 2)
 
         return image
 
@@ -1372,6 +1449,9 @@ class RosThread(Node):
                         tf_wt.transform.translation.y, tf_wt.transform.translation.z)
             orientation = (tf_wt.transform.rotation.x, tf_wt.transform.rotation.y,
                            tf_wt.transform.rotation.z, tf_wt.transform.rotation.w)
+
+            self.position = position
+            self.orientation = orientation
         except tf2_ros.TransformException as ex:
             # Fallback to the latest available transform within a 1-second duration
             print(ex)
