@@ -1,4 +1,5 @@
 import cv2
+import time
 import numpy as np
 import threading
 import matplotlib.pyplot as plt
@@ -45,11 +46,14 @@ class LightMap():
         self.sigma = 20
 
         self.plot_light_map_flag = True
-        self.map_image_cv2 = np.zeros((100, 100, 3))
+        self.map_image_cv2 = np.zeros((100, 100, 3), dtype=np.uint8)
         # self.update_map()
 
         self.figure = plt.figure()
         self.cmap = "gray"
+
+        self.t0 = time.time()
+        self.period = 0.1
 
     def start(self):
         self.stopped = False
@@ -67,14 +71,16 @@ class LightMap():
 
                 map_image_cv2 = cv2.cvtColor(
                     map, cv2.COLOR_BGR2RGB)
+
                 # draw a samll circle at the location of the LEDs
                 for i in range(len(self.led_locations)):
                     center = (self.led_locations_px[i]
                               [0], self.led_locations_px[i][1])
                     cv2.circle(map_image_cv2, center, 20, (255, 255, 255), 3)
 
-                # Flip along the x-axis
-                self.map_image_cv2 = cv2.flip(map_image_cv2, 0)
+                # Flip along the x-axis and y-axis
+                map_image_cv2 = cv2.flip(map_image_cv2, 0)
+                self.map_image_cv2 = cv2.flip(map_image_cv2, 1)
 
                 pixel_values = []
                 for i in range(len(self.led_locations)):
@@ -83,6 +89,11 @@ class LightMap():
                 self.pixel_values = pixel_values
 
                 self.update_map_flag = False
+            t1 = time.time()
+            dt = t1 - self.t0
+            if dt < self.period:
+                time.sleep(self.period - dt)
+            self.t0 = time.time()
 
     def set_intensity(self, intensity):
         self.intensity = int(intensity)
@@ -93,7 +104,7 @@ class LightMap():
         self.update_map_flag = True
 
     def set_mu_x(self, x):
-        self.mu_x = self.width_mm*x
+        self.mu_x = -self.width_mm*x
         self.update_map_flag = True
 
     def set_mu_y(self, y):

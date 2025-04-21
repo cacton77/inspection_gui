@@ -25,11 +25,6 @@ class Materials:
     viewpoint_material.base_color = [1.0, 1.0, 1.0, 1.0]
     # viewpoint_material.base_color = [204/255, 108/255, 231/255, 1.0]
 
-    selected_viewpoint_material = MaterialRecord()
-    selected_viewpoint_material.shader = 'defaultUnlit'
-    selected_viewpoint_material.base_color = [204/255, 108/255, 231/255, 1.0]
-    selected_viewpoint_material.base_color = [254/255, 153/255, 0/255, 1.0]
-
     line_material = MaterialRecord()
     line_material.shader = 'unlitLine'
     line_material.base_color = [1.0, 1.0, 1.0, 0.25]
@@ -37,8 +32,8 @@ class Materials:
 
     selected_line_material = MaterialRecord()
     selected_line_material.shader = 'unlitLine'
-    selected_line_material.base_color = [1.0, 1.0, 1.0, 1.0]
-    selected_line_material.line_width = 2.0
+    # selected_line_material.base_color = [0.0, 0.0, 0.0, 8.0]
+    selected_line_material.line_width = 10.0
 
     live_point_cloud_material = MaterialRecord()
     live_point_cloud_material.shader = 'defaultUnlit'
@@ -55,6 +50,7 @@ class Materials:
     best_path_material.base_color = [0/255, 100/255, 0/255, 1.0]
     best_path_material.base_color = [125/255, 218/255, 88/255, 1.0]
     best_path_material.base_color = [92/255, 140/255, 207/255, 1.0]
+    best_path_material.base_color = [0.80, 0.80, 0.80, 0.75]
     # best_path_material.base_color = [191/255, 214/255, 65/255, 1.0]
 
     ground_plane_material = MaterialRecord()
@@ -71,8 +67,18 @@ class Materials:
     axes_line_material.base_color = [1.0, 1.0, 1.0, 1.0]
     axes_line_material.line_width = 3.0
 
+    selected_color = [183/255, 108/255, 211/255, 1.0]
+    # selected_color = [0.8, 0.8, 0.8, 1.0]
+
+    selected_viewpoint_material = MaterialRecord()
+    selected_viewpoint_material.shader = 'defaultUnlit'
+    selected_viewpoint_material.base_color = [204/255, 108/255, 231/255, 1.0]
+    selected_viewpoint_material.base_color = [254/255, 153/255, 0/255, 1.0]
+    selected_viewpoint_material.base_color = selected_color
+
     camera_line_material = MaterialRecord()
     camera_line_material.shader = 'unlitLine'
     # camera_line_material.base_color = [204/255, 108/255, 231/255, 1.0]
     camera_line_material.base_color = [254/255, 153/255, 0/255, 1.0]
+    camera_line_material.base_color = selected_color
     camera_line_material.line_width = 4.0

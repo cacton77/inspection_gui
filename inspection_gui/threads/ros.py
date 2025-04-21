@@ -27,13 +27,14 @@ from rcl_interfaces.srv import ListParameters, DescribeParameters, GetParameters
 
 from inspection_gui.threads.tf2_message_filter import Tf2MessageFilter
 from inspection_gui.focus_monitor import FocusMonitor
+from inspection_gui.threads.lighting import LightMap
 from inspection_msgs.msg import PixelStrip, FocusValue
 from inspection_srvs.srv import CaptureImage, MoveToPose, SetFocusMetric
 from std_msgs.msg import Float64, ColorRGBA, String
 from std_srvs.srv import Trigger
 from controller_manager_msgs.srv import SwitchController
 
-kv = 0.3
+kv = 0.6
 
 OFF = 0
 ON = 1
@@ -55,7 +56,7 @@ AUTOFOCUS_FAILURE = 2
 
 # DYNAMIC_AUTOFOCUS_SPEED = 0.01
 # HILLCLIMB_AUTOFOCUS_SPEED = 0.1
-AUTOFOCUS_SPEED = 0.1
+AUTOFOCUS_SPEED = 0.25
 
 
 class RosThread(Node):
@@ -64,6 +65,7 @@ class RosThread(Node):
 
     servo_state = ON
     state = IDLE
+    state_flags = [False]*8
 
     focus_metric = 'sobel'
     focus_value_alpha = 0.5
@@ -110,14 +112,25 @@ class RosThread(Node):
     servo_twist.header.frame_id = 'tool0'
     servo_twist_pub_timer_period = 0.1
 
-    autofocus_type = 'dynamic'
-    autofocus_distance = 0.04
+    af_type = 'dynamic'
+    af_distance = 0.04
+    af_dFV_threshold = 50
+    af_ddFV_threshold = -30
+
     data_path = '/root/Inspection/data/'
     last_data_path = '/root/Inspection/data/'
 
     last_process_time = time.time()
     macro_image_fps = 0
     focus_measurement_time = 0
+
+    image_width = 640
+    image_height = 480
+
+    roi_width = 100
+    roi_height = 100
+
+    illuminance_resolution = 40
 
     # initialization method
     def __init__(self, stream_id=0):
@@ -142,13 +155,12 @@ class RosThread(Node):
         self.depth_intrinsic = o3d.camera.PinholeCameraIntrinsic(
             o3d.camera.PinholeCameraIntrinsicParameters.PrimeSenseDefault)
 
-        self.T = np.eye(4)
+        self.T_wt = np.eye(4)
 
         self.annotated_rgb_image = np.zeros(
             (480, 640, 3), dtype=np.uint8)
         self.rgb_image = np.zeros((480, 640, 3), dtype=np.uint8)
         self.depth_image = np.zeros((480, 640, 1), dtype=np.float32)
-        self.illuminance_image = np.zeros((480, 640, 1), dtype=np.uint8)
 
         # TF2 #########################################################################
 
@@ -163,8 +175,12 @@ class RosThread(Node):
 
         macro_camera_cb_group = MutuallyExclusiveCallbackGroup()
 
-        self.focus_monitor = FocusMonitor(0.5, 0.5, 100, 100, 'sobel')
-        self.macro_image = np.zeros((576, 1024, 3), dtype=np.uint8)
+        self.focus_monitor = FocusMonitor(
+            0.5, 0.5, self.roi_width, self.roi_height, 'sobel')
+        self.macro_image = np.zeros((480, 620, 3), dtype=np.uint8)
+        self.display_image = np.zeros((480, 620, 3), dtype=np.uint8)
+        self.cropped_image = np.zeros(
+            (self.roi_height, self.roi_width, 3), dtype=np.uint8)
 
         image_topic = '/image_raw/compressed'
         image_sub = self.create_subscription(
@@ -332,6 +348,13 @@ class RosThread(Node):
 
         # LIGHTS #########################################################################
 
+        shape_mm = (200, 200)
+        dpmm = 10
+        light_locations = np.loadtxt(
+            '/root/Inspection/Lights/led_positions.csv', delimiter=',')
+        self.light_map = LightMap(shape_mm, dpmm, light_locations)
+        self.light_map.start()
+
         lights_cb_group = MutuallyExclusiveCallbackGroup()
 
         self.capture_image_future = None
@@ -340,7 +363,7 @@ class RosThread(Node):
         self.wb = [1.0, 1.0, 1.0]
         self.pixel_strip_msg.pixel_colors = self.pixel_count * \
             [ColorRGBA(r=0.0, g=0.0, b=0.0)]
-        pixel_pub_timer_period = 0.1
+        pixel_pub_timer_period = 0.05
         self.pixel_pub = self.create_publisher(PixelStrip, '/pixel_strip', 10)
         self.pixel_pub_timer = self.create_timer(
             pixel_pub_timer_period, self.pixel_pub_timer_callback, callback_group=lights_cb_group)
@@ -429,6 +452,14 @@ class RosThread(Node):
         self.plot_timer = self.create_timer(
             self.plot_timer_period, self.plot_timer_callback)
 
+        # ILLUMINANCE ####################################################################
+        self.illuminance_plot = np.zeros((480,
+                                          620, 3), dtype=np.uint8)
+
+        self.illuminance_timer_period = 0.1
+        self.illuminance_timer = self.create_timer(
+            self.illuminance_timer_period, self.illuminance_timer_callback, callback_group=lights_cb_group)
+
         # MAIN LOOP #####################################################################
 
         main_callback_group = MutuallyExclusiveCallbackGroup()
@@ -441,26 +472,34 @@ class RosThread(Node):
         # Check state
         if self.state == IDLE:
             self.velocity = self.get_teleop_velocity()
+            if self.state_flags[SAVING_DATA]:
+                self.state = SAVING_DATA
+                self.save_focus_data()
+                self.state_flags[SAVING_DATA] = False
+                self.state = IDLE
         elif self.state == AUTOFOCUS:
             autofocus_status = AUTOFOCUS_IN_PROGRESS
 
             # Get velocity based on autofocus type
-            if self.autofocus_type == 'dynamic':
+            if self.af_type == 'dynamic':
                 self.velocity, autofocus_status = self.get_dynamic_autofocus_velocity()
-            elif self.autofocus_type == 'hillclimb':
+            elif self.af_type == 'hillclimb':
                 self.velocity, autofocus_status = self.get_hillclimb_autofocus_velocity()
 
             # If autofocus is successful, move to max focus position
             if autofocus_status == AUTOFOCUS_SUCCESS:
                 self.get_logger().info('Autofocus successful!')
-                tf_max = np.eye(4)
-                rotation = R.from_quat(
-                    self.autofocus_data_dict['orientation_max'])
-                rotation_matrix = rotation.as_matrix()
-                tf_max[:3, :3] = rotation_matrix
-                tf_max[:3, 3] = self.autofocus_data_dict['position_max']
+                if self.af_type == 'hillclimb':
+                    tf_max = np.eye(4)
+                    rotation = R.from_quat(
+                        self.autofocus_data_dict['orientation_max'])
+                    rotation_matrix = rotation.as_matrix()
+                    tf_max[:3, :3] = rotation_matrix
+                    tf_max[:3, 3] = self.autofocus_data_dict['position_max']
 
-                self.move_to_pose(tf_max, 'world')
+                    self.move_to_pose(tf_max, 'world')
+
+                self.state_flags[SAVING_DATA] = True
             elif autofocus_status == AUTOFOCUS_FAILURE:
                 self.get_logger().info('Autofocus failed!')
                 self.reset_autofocus_data()
@@ -473,60 +512,10 @@ class RosThread(Node):
             pass
         elif self.state == RESETTING:
             pass
-        # elif self.state == MOVING:
-        #     print('Moving...')
-        # elif self.state == CAPTURING:
-        #     pass
-        # elif self.state == SAVING:
-        #     self.save_focus_data()
-        #     self.state = RESETTING
-        # elif self.state == RESETTING:
-        #     self.reset_autofocus_data()
-        #     self.state = IDLE
-
-        # # Get velocity based on servo state
-        # if self.state == IDLE:
-        #     velocity = self.get_teleop_velocity()
-        # elif self.state == DYNAMIC_AUTOFOCUS:
-        #     velocity, autofocus_status = self.get_dynamic_autofocus_velocity()
-        #     if autofocus_status == AUTOFOCUS_SUCCESS:
-        #         tf_max = np.eye(4)
-        #         rotation = R.from_quat(
-        #             self.autofocus_data_dict['orientation_max'])
-        #         rotation_matrix = rotation.as_matrix()
-        #         tf_max[:3, :3] = rotation_matrix
-        #         tf_max[:3, 3] = self.autofocus_data_dict['position_max']
-        #         self.move_to_pose(tf_max, 'world', next_state=SAVING)
-        #     elif autofocus_status == AUTOFOCUS_FAILURE:
-        #         tf_original = np.eye(4)
-        #         rotation = R.from_quat(
-        #             self.autofocus_data_dict['orientation'][0])
-        #         rotation_matrix = rotation.as_matrix()
-        #         tf_original[:3, :3] = rotation_matrix
-        #         tf_original[:3, 3] = self.autofocus_data_dict['position'][0]
-        #         self.move_to_pose(tf_original, 'world')
-        # elif self.state == HILLCLIMB_AUTOFOCUS:
-        #     velocity, autofocus_status = self.get_hillclimb_autofocus_velocity()
-        #     if autofocus_status == AUTOFOCUS_SUCCESS:
-        #         tf_max = np.eye(4)
-        #         rotation = R.from_quat(
-        #             self.autofocus_data_dict['orientation_max'])
-        #         rotation_matrix = rotation.as_matrix()
-        #         tf_max[:3, :3] = rotation_matrix
-        #         tf_max[:3, 3] = self.autofocus_data_dict['position_max']
-        #         self.move_to_pose(tf_max, 'world')
-        #         self.save_focus_data()
-        #     elif autofocus_status == AUTOFOCUS_FAILURE:
-        #         tf_original = np.eye(4)
-        #         rotation = R.from_quat(
-        #             self.autofocus_data_dict['orientation'][0])
-        #         rotation_matrix = rotation.as_matrix()
-        #         tf_original[:3, :3] = rotation_matrix
-        #         tf_original[:3, 3] = self.autofocus_data_dict['position'][0]
-        #         self.move_to_pose(tf_original, 'world')
-        #         self.reset_autofocus_data()
-
-        # Set self.servo_twist based on velocity
+        elif self.state == CAPTURING_IMAGE:
+            pass
+        elif self.state == SAVING_DATA:
+            pass
 
     def start_measure(self):
         self.t0 = time.time()
@@ -661,7 +650,6 @@ class RosThread(Node):
         return new_rotation.as_matrix()
 
     def joy_callback(self, msg):
-        self.joy_axes = msg.axes
         self.joy_buttons = msg.buttons
         if self.joy_buttons[-1] == 1:
             position = self.autofocus_data_dict['position'][-1]
@@ -676,20 +664,30 @@ class RosThread(Node):
             self.move_to_pose(new_tf, 'world')
         elif self.joy_buttons[0] == 1:
             # Autofocus
-            self.autofocus_type = 'dynamic'
             if self.state == IDLE:
+                self.af_type = 'dynamic'
                 self.start_autofocus()
         elif self.joy_buttons[1] == 1:
             self.capture_image(self.last_data_path + 'image.jpg')
         elif self.joy_buttons[2] == 1:
             # Autofocus
-            self.autofocus_type = 'hillclimb'
             if self.state == IDLE:
+                self.af_type = 'hillclimb'
                 self.start_autofocus()
+
         elif self.joy_buttons[6]:
             self.set_home_position()
         elif self.joy_buttons[8]:
             self.go_to_home_position()
+
+        if self.joy_buttons[4] == 1:
+            self.light_map.set_sigma(int(100*(msg.axes[5]+1)/2)+0.01)
+            self.light_map.set_mu_x(-msg.axes[0]/2)
+            self.light_map.set_mu_y(msg.axes[1]/2)
+            # self.light_map.set_sigma(sigma)
+            self.set_pixels()
+        else:
+            self.joy_axes = msg.axes
 
     def set_home_position(self):
         self.home_position = self.position
@@ -709,6 +707,7 @@ class RosThread(Node):
     def move_to_pose(self, tf, frame_id):
         self.stop_servo_control()
         while not self.state == MOVING:
+            print(self.state)
             self.get_logger().info('Waiting for state to be MOVING...')
             time.sleep(0.1)
 
@@ -763,6 +762,7 @@ class RosThread(Node):
         self.get_logger().info(f'Capturing image to: {file_path}')
         req = CaptureImage.Request()
         req.file_path = file_path
+        print(req.file_path)
         future = self.capture_image_cli.call_async(req)
         future.add_done_callback(self.capture_image_callback)
 
@@ -984,7 +984,7 @@ class RosThread(Node):
 
         self.depth_image = depth_image_m
         self.rgb_image = rgb_image
-        self.T = T
+        self.T_wt = T
         self.illuminance_image = hsv_image[:, :, 2]
 
     def set_focus_metric(self, name):
@@ -1000,19 +1000,19 @@ class RosThread(Node):
             v_last = (0., 0., 0., 0., 0., 0.)
         # Round to 3 decimal places
         vx_curr = -self.joy_axes[0]
-        vx_curr = 0.9 * vx_curr + 0.1 * v_last[0]
+        vx_curr = 0.8 * vx_curr + 0.2 * v_last[0]
         vx_curr = vx_curr if abs(vx_curr) > self.pan_vel_min[0] else 0.0
 
         vy_curr = (-self.joy_axes[5]+1)/2 - (-self.joy_axes[2]+1)/2
-        vy_curr = 0.9 * vy_curr + 0.1 * v_last[1]
+        vy_curr = 0.8 * vy_curr + 0.2 * v_last[1]
         vy_curr = vy_curr if abs(vy_curr) > self.zoom_vel_min else 0.0
 
         vz_curr = -self.joy_axes[1]
-        vz_curr = 0.9 * vz_curr + 0.1 * v_last[2]
+        vz_curr = 0.8 * vz_curr + 0.2 * v_last[2]
         vz_curr = vz_curr if abs(vz_curr) > self.pan_vel_min[1] else 0.0
 
         wx_curr = self.orbit_scaling[0] * self.joy_axes[4]
-        wx_curr = 0.9 * wx_curr + 0.1 * v_last[3]
+        wx_curr = 0.8 * wx_curr + 0.2 * v_last[3]
         wx_curr = wx_curr if abs(wx_curr) > self.orbit_vel_min[0] else 0.0
 
         # wy_curr = -self.joy_axes[3]
@@ -1021,7 +1021,7 @@ class RosThread(Node):
         wy_curr = 0.0
 
         wz_curr = -self.orbit_scaling[2] * self.joy_axes[3]
-        wz_curr = 0.9 * wz_curr + 0.1 * v_last[5]
+        wz_curr = 0.8 * wz_curr + 0.2 * v_last[5]
         wz_curr = wz_curr if abs(wz_curr) > self.orbit_vel_min[2] else 0.0
 
         return (round(vx_curr, 3), -round(vy_curr, 3), round(vz_curr, 3), round(wx_curr, 3), round(wy_curr, 3), round(wz_curr, 3))
@@ -1091,14 +1091,13 @@ class RosThread(Node):
 
     def get_hillclimb_autofocus_velocity(self):
 
-        # Check current position against first position. If distance is greater than self.autofocus_distance, return
+        # Check current position against first position. If distance is greater than self.af_distance, return
         if len(self.autofocus_data_dict['position']) > 1:
             p0 = self.autofocus_data_dict['position'][0]
             p1 = self.autofocus_data_dict['position'][-1]
             distance = np.linalg.norm(np.array(p1) - np.array(p0))
 
-            if distance > self.autofocus_distance:
-                self.state = IDLE
+            if distance > self.af_distance:
                 return (0., 0., 0., 0., 0., 0.), AUTOFOCUS_SUCCESS
 
         speed = AUTOFOCUS_SPEED
@@ -1107,14 +1106,13 @@ class RosThread(Node):
 
     def get_dynamic_autofocus_velocity(self):
 
-        # Check current position against first position. If distance is greater than self.autofocus_distance, return
+        # Check current position against first position. If distance is greater than self.af_distance, return
         if len(self.autofocus_data_dict['position']) > 1:
             p0 = self.autofocus_data_dict['position'][0]
             p1 = self.autofocus_data_dict['position'][-1]
             distance = np.linalg.norm(np.array(p1) - np.array(p0))
 
-            if distance > self.autofocus_distance:
-                self.state = IDLE
+            if abs(distance) > self.af_distance:
                 return (0., 0., 0., 0., 0., 0.), AUTOFOCUS_FAILURE
 
         speed = AUTOFOCUS_SPEED
@@ -1146,19 +1144,28 @@ class RosThread(Node):
                     self.autofocus_data_dict['dFV'][-2]
             except:
                 print(self.autofocus_data_dict)
-            # Smoothing ddFV
+
             K_smooth = 2 / (3 + 1)
             smooth_ddFV = (
                 K_smooth * (ddFV - self.autofocus_data_dict['smooth_ddFV'][-1])) + self.autofocus_data_dict['smooth_ddFV'][-1]
 
+            if smooth_ddFV < self.af_ddFV_threshold:
+                print(f'dFV: {dFV}')
+                print(f'ddFV: {smooth_ddFV}')
+
             # Calculate speed
-            if smooth_ddFV < -0.1 and dFV > 0:
-                speed = kv/ratio
-            elif self.autofocus_data_dict['dFV'][-2] > 2 and dFV < 2 and smooth_ddFV < -0.1:
+
+            if abs(dFV) < self.af_dFV_threshold and smooth_ddFV < self.af_ddFV_threshold:
                 speed = 0
-                print('Completed autofocus')
+                self.get_logger().info('Completed autofocus')
                 self.state = IDLE
                 return (0., 0., 0., 0., 0., 0.), AUTOFOCUS_SUCCESS
+            if smooth_ddFV < -0.1 and dFV > 0:
+                speed = kv/ratio
+            elif smooth_ddFV < -0.1 and dFV > 0:
+                speed = -kv/ratio
+            elif smooth_ddFV > 0.1 and dFV < 0:
+                speed = -kv*(ratio-0.5)
             else:
                 speed = kv*(ratio-0.5)
 
@@ -1173,6 +1180,9 @@ class RosThread(Node):
 
         return (0., -speed, 0., 0., 0., 0.), AUTOFOCUS_IN_PROGRESS
 
+    def set_material(self, material):
+        self.autofocus_data_dict['material'] = material
+
     def reset_autofocus_data(self):
 
         # Create a blank image
@@ -1185,19 +1195,28 @@ class RosThread(Node):
         cv2.rectangle(image, bbox_top_left,
                       bbox_bottom_right, (255, 255, 255), 2)
 
-        # Create a blank image
-        height, width = 400, 800
-        plot_image = np.ones((height, width, 3), dtype=np.uint8) * 255
+        velocity_plot = image.copy()
 
-        # Define the bounding box
-        bbox_top_left = (50, 50)
-        bbox_bottom_right = (750, 350)
-        cv2.rectangle(image, bbox_top_left, bbox_bottom_right, (0, 0, 0), 2)
+        margin = 10
+        cv2.rectangle(image, (50+margin, 50+margin),
+                      (300+margin, 150+margin), (0, 0, 0), -1)
+        cv2.rectangle(image, (50+margin, 50+margin),
+                      (300+margin, 150+margin), (255, 255, 255), 2)
+
+        cv2.rectangle(velocity_plot, (50+margin, 50+margin),
+                      (195+margin, 195+margin), (0, 0, 0), -1)
+        cv2.rectangle(velocity_plot, (50+margin, 50+margin),
+                      (195+margin, 195+margin), (255, 255, 255), 2)
+
+        self.fv_ratio_plot = image.copy()
 
         self.autofocus_data_dict = {
+            'material': None,
             'metric': self.focus_metric,
-            'autofocus_type': self.autofocus_type,
-            'buffer_size': 100,
+            'af_type': self.af_type,
+            'roi_width': self.roi_width,
+            'roi_height': self.roi_height,
+            'buffer_size': 200,
             'focus_value_max': 0.1,
             'position_max': [0., 0., 0.],
             'orientation_max': [0., 0., 0., 1.],
@@ -1210,13 +1229,14 @@ class RosThread(Node):
             'ddFV': [],
             'smooth_ddFV': [],
             'ratio': [],
-            'image': [image],
-            'focus_image': [image],
+            'image': [],
+            'focus_image': [],
             'position': [],
             'orientation': [],
             'velocity_data': {'time': [], 'velocity': []},
             'focus_value_plot': image,
-            'velocity_plot': image
+            'velocity_plot': velocity_plot,
+            'illuminance_map': np.zeros((480, 620), dtype=np.uint8),
         }
 
         self.state = IDLE
@@ -1229,13 +1249,113 @@ class RosThread(Node):
 
         focus_value_plot = self.plot_focus_metrics()
         velocity_plot = self.plot_twist_velocity()
+        self.illuminance_plot = self.plot_illuminance()
+        self.fv_ratio_plot = self.plot_fv_ratio()
 
         self.autofocus_data_dict['focus_value_plot'] = focus_value_plot
         self.autofocus_data_dict['velocity_plot'] = velocity_plot
 
+    def illuminance_timer_callback(self):
+        if self.state == RESETTING:
+            return
+        elif len(self.autofocus_data_dict['focus_value']) <= 1:
+            return
+
+        # Conver tthe macro image to LAB colorspace
+        lab = cv2.cvtColor(self.macro_image, cv2.COLOR_BGR2LAB)
+        # Extract the L channel
+        l = lab[:, :, 0]
+
+        height, width = l.shape
+
+        # Apply a gaussian blur to the value channel
+        v = cv2.GaussianBlur(l, (5, 5), 0, 0, cv2.BORDER_DEFAULT)
+
+        # Downsample the hsv image
+        illuminance_map = cv2.resize(
+            l, (width//self.illuminance_resolution, height//self.illuminance_resolution), interpolation=cv2.INTER_AREA)
+
+        self.autofocus_data_dict['illuminance_map'] = illuminance_map
+
     def plot_focus_metrics(self):
         # Plot focus metric data
-        data = self.autofocus_data_dict['focus_value']
+        fv_data = self.autofocus_data_dict['focus_value']
+        fv_dema_data = self.autofocus_data_dict['focus_value_dema']
+
+        # If data is shorter than the buffer size, pad with zeros
+        if len(fv_data) < self.autofocus_data_dict['buffer_size']:
+            fv_data = [0] * \
+                (self.autofocus_data_dict['buffer_size'] -
+                 len(fv_data)) + fv_data
+            fv_dema_data = [0] * \
+                (self.autofocus_data_dict['buffer_size'] -
+                 len(fv_dema_data)) + fv_dema_data
+        # If data is longer than buffer size, truncate to last buffer_size elements
+        elif len(fv_data) > self.autofocus_data_dict['buffer_size']:
+            fv_data = fv_data[-self.autofocus_data_dict['buffer_size']:]
+            fv_dema_data = fv_dema_data[-self.autofocus_data_dict['buffer_size']:]
+
+        # Current focus value
+        focus_value_curr = fv_data[-1]
+
+        # Set the maximum value of the plot
+        max_curr = self.autofocus_data_dict['focus_value_max']
+        if max_curr == 0:
+            max_curr = 1
+        max_curr = max(max_curr, max(fv_dema_data))
+
+        # Scale data to fit within the bounding box
+        fv_data = [100 * x / max_curr
+                   for x in fv_data]
+        fv_dema_data = [100 * x / max_curr
+                        for x in fv_dema_data]
+
+        # Create a blank image
+        height, width = 400, 800
+        image = np.ones((height, width, 3), dtype=np.uint8) * 0
+
+        # Define the bounding box
+        bbox_top_left = (50, 50)
+        bbox_bottom_right = (750, 350)
+        cv2.rectangle(image, bbox_top_left,
+                      bbox_bottom_right, (255, 255, 255), 2)
+
+        # Plot the data as vertical bars
+        bar_width = (bbox_bottom_right[0] - bbox_top_left[0]) // len(fv_data)
+        for i in range(len(fv_data)):
+            fv_value = fv_data[i]
+            fv_dema_value = fv_dema_data[i]
+            x1 = bbox_top_left[0] + i * bar_width
+            y1 = bbox_bottom_right[1] - \
+                int((bbox_bottom_right[1] -
+                     bbox_top_left[1]) * (fv_value / 100))
+            x2 = x1 + bar_width - 1
+            y2 = bbox_bottom_right[1]
+            cv2.rectangle(image, (x1, y1), (x2, y2), (255, 255, 255), -1)
+            y1 = bbox_bottom_right[1] - \
+                int((bbox_bottom_right[1] -
+                     bbox_top_left[1]) * (fv_dema_value / 100))
+            y2 = y1 + 4*(x1 - x2)
+            cv2.rectangle(image, (x1, y1), (x2, y2), (255, 0, 0), -1)
+
+        # Draw a box with white border and black transparent fill in the upper left corner of the image
+        margin = 10
+        cv2.rectangle(image, (50+margin, 50+margin),
+                      (300+margin, 150+margin), (0, 0, 0), -1)
+        cv2.rectangle(image, (50+margin, 50+margin),
+                      (300+margin, 150+margin), (255, 255, 255), 2)
+        # Add text to the box. First line "FV: " followed by the last focus value
+        cv2.putText(image, 'FV: ' + str(int(focus_value_curr)),
+                    (60+margin, 90+margin), cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 2, cv2.LINE_AA)
+        # Add text to the box. Second line "FV MAX: " followed by the max focus value
+        cv2.putText(image, 'FV MAX: ' + str(int(self.autofocus_data_dict['focus_value_max'])),
+                    (60+margin, 130+margin), cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 2, cv2.LINE_AA)
+
+        return image
+
+    def plot_fv_ratio(self):
+        # Plot focus metric data
+        data = self.autofocus_data_dict['ratio']
 
         # If data is shorter than the buffer size, pad with zeros
         if len(data) < self.autofocus_data_dict['buffer_size']:
@@ -1244,18 +1364,6 @@ class RosThread(Node):
         # If data is longer than buffer size, truncate to last buffer_size elements
         elif len(data) > self.autofocus_data_dict['buffer_size']:
             data = data[-self.autofocus_data_dict['buffer_size']:]
-
-        # Current focus value
-        focus_value_curr = data[-1]
-
-        # Set the maximum value of the plot
-        max_curr = self.autofocus_data_dict['focus_value_max']
-        if max_curr == 0:
-            max_curr = 1
-
-        # Scale data to fit within the bounding box
-        data = [100 * x / max_curr
-                for x in data]
 
         # Create a blank image
         height, width = 400, 800
@@ -1273,23 +1381,10 @@ class RosThread(Node):
             x1 = bbox_top_left[0] + i * bar_width
             y1 = bbox_bottom_right[1] - \
                 int((bbox_bottom_right[1] -
-                     bbox_top_left[1]) * (value / 100))
+                     bbox_top_left[1]) * (value))
             x2 = x1 + bar_width - 1
             y2 = bbox_bottom_right[1]
             cv2.rectangle(image, (x1, y1), (x2, y2), (255, 255, 255), -1)
-
-        # Draw a box with white border and black transparent fill in the upper left corner of the image
-        margin = 10
-        cv2.rectangle(image, (50+margin, 50+margin),
-                      (300+margin, 150+margin), (0, 0, 0), -1)
-        cv2.rectangle(image, (50+margin, 50+margin),
-                      (300+margin, 150+margin), (255, 255, 255), 2)
-        # Add text to the box. First line "FV: " followed by the last focus value
-        cv2.putText(image, 'FV: ' + str(int(focus_value_curr)),
-                    (60+margin, 90+margin), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
-        # Add text to the box. Second line "FV MAX: " followed by the max focus value
-        cv2.putText(image, 'FV MAX: ' + str(int(self.autofocus_data_dict['focus_value_max'])),
-                    (60+margin, 130+margin), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2, cv2.LINE_AA)
 
         return image
 
@@ -1348,24 +1443,83 @@ class RosThread(Node):
         # Draw a box with white border and black transparent fill in the upper left corner of the image
         margin = 10
         cv2.rectangle(image, (50+margin, 50+margin),
-                      (185+margin, 195+margin), (0, 0, 0), -1)
+                      (195+margin, 195+margin), (0, 0, 0), -1)
         cv2.rectangle(image, (50+margin, 50+margin),
-                      (180+margin, 195+margin), (255, 255, 255), 2)
+                      (195+margin, 195+margin), (255, 255, 255), 2)
         # Add text to the box. First line "X: " followed by the  x velocity
-        cv2.putText(image, 'X: ' + str(round(self.velocity[0], 3)),
-                    (60+margin, 90+margin), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2, cv2.LINE_AA)
+        cv2.putText(image, 'X: ' + str(round(self.velocity[0], 2)),
+                    (60+margin, 90+margin), cv2.FONT_HERSHEY_PLAIN, 2, (255, 0, 0), 2, cv2.LINE_AA)
         # Add text to the box. Second line "Y: " followed by the y velocity
-        cv2.putText(image, 'Y: ' + str(round(self.velocity[1], 3)),
-                    (60+margin, 130+margin), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+        cv2.putText(image, 'Y: ' + str(round(self.velocity[1], 2)),
+                    (60+margin, 130+margin), cv2.FONT_HERSHEY_PLAIN, 2, (0, 255, 0), 2, cv2.LINE_AA)
         # Add text to the box. Third line "Z: " followed by the z velocity
-        cv2.putText(image, 'Z: ' + str(round(self.velocity[2], 3)),
-                    (60+margin, 170+margin), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
+        cv2.putText(image, 'Z: ' + str(round(self.velocity[2], 2)),
+                    (60+margin, 170+margin), cv2.FONT_HERSHEY_PLAIN, 2, (0, 0, 255), 2, cv2.LINE_AA)
 
         # Draw bounding box last so it is on top of the bars
         cv2.rectangle(image, bbox_top_left,
                       bbox_bottom_right, (255, 255, 255), 2)
 
         return image
+
+    def set_intensity(self, intensity):
+        self.light_map.set_intensity(intensity)
+        self.set_pixels()
+
+    def set_mu_x(self, x):
+        self.light_map.set_mu_x(x)
+        self.set_pixels()
+
+    def set_mu_y(self, y):
+        self.light_map.set_mu_y(y)
+        self.set_pixels()
+
+    def set_sigma(self, sigma):
+        self.light_map.set_sigma(sigma)
+        self.set_pixels()
+
+    def set_pixels(self):
+        # Make every tenth pixel white
+        pixel_values = self.light_map.get_pixel_values()
+        pixel_colors = []
+        for value in pixel_values:
+            pixel_colors.append((value, value, value))
+        self.pixels_to(pixel_colors)
+
+    def plot_illuminance(self):
+
+        # Subtract the mean value from the illuminance map.
+        illuminance_map = self.autofocus_data_dict['illuminance_map']
+        # illuminance_map = illuminance_map - np.mean(illuminance_map)
+
+        # Make sure the illuminance map is CV_8UC1
+        # illuminance_map = cv2.normalize(
+        # illuminance_map, None, 0, 255, cv2.NORM_MINMAX)
+        illuminance_map = illuminance_map.astype(np.uint8)
+
+        # Positive values are green, negative values are red
+        illuminance_plot = cv2.applyColorMap(
+            illuminance_map, cv2.COLORMAP_TWILIGHT)
+
+        # Convert from BGR to RGB
+        illuminance_plot = cv2.cvtColor(illuminance_plot, cv2.COLOR_BGR2RGB)
+
+        # Upscale the illuminance map to the same size as the focus image
+        illuminance_plot = cv2.resize(
+            illuminance_plot, (self.image_width, self.image_height), interpolation=cv2.INTER_AREA)
+
+        # Draw ROI rectangle
+        cx = self.focus_monitor.cx
+        cy = self.focus_monitor.cy
+        w = self.focus_monitor.w
+        h = self.focus_monitor.h
+        x0 = int(cx*self.image_width - w/2)
+        y0 = int(cy*self.image_height - h/2)
+        x1 = int(cx*self.image_width + w/2)
+        y1 = int(cy*self.image_height + h/2)
+        cv2.rectangle(illuminance_plot, (x0, y0), (x1, y1), (255, 255, 255), 2)
+
+        return illuminance_plot
 
     def save_focus_data(self):
 
@@ -1376,7 +1530,7 @@ class RosThread(Node):
         now = datetime.datetime.now()
         dt_string = now.strftime("%Y-%m-%d-%H-%M-%S")
         file_path = self.data_path + dt_string + '/'
-        os.makedirs(file_path)
+        os.makedirs(file_path, exist_ok=True)
         self.last_data_path = file_path
 
         # Remove image and focus_image from dictionary
@@ -1384,6 +1538,8 @@ class RosThread(Node):
         focus_images = autofocus_data_dict.pop('focus_image')
         focus_value_plot = autofocus_data_dict.pop('focus_value_plot')
         velocity_plot = autofocus_data_dict.pop('velocity_plot')
+        illuminance_map = autofocus_data_dict.pop('illuminance_map')
+
         # Save the dictionary to a file
         with open(file_path + 'data.json', 'w') as f:
             json.dump(autofocus_data_dict, f)
@@ -1411,6 +1567,8 @@ class RosThread(Node):
             msg, desired_encoding="rgb8").astype(np.uint8)
 
         height, width, _ = macro_image.shape
+        self.image_height = height
+        self.image_width = width
 
         cx = self.focus_monitor.cx
         cy = self.focus_monitor.cy
@@ -1444,14 +1602,25 @@ class RosThread(Node):
         try:
             # Attempt to get the transform at the exact requested time
             tf_wt = self.tfBuffer.lookup_transform(
-                'world', 'tool0', msg_time, rclpy.time.Duration(seconds=1.0))
+                'world', 'tool0', msg_time, rclpy.time.Duration(seconds=0.1))
             position = (tf_wt.transform.translation.x,
                         tf_wt.transform.translation.y, tf_wt.transform.translation.z)
             orientation = (tf_wt.transform.rotation.x, tf_wt.transform.rotation.y,
                            tf_wt.transform.rotation.z, tf_wt.transform.rotation.w)
 
+            # Combine position and R into a 4x4 transformation matrix
+            T = np.eye(4)
+            R = o3d.geometry.get_rotation_matrix_from_quaternion(
+                [orientation[3], orientation[0], orientation[1], orientation[2]])
+            T[:3, :3] = R
+            T[0, 3] = position[0]
+            T[1, 3] = position[1]
+            T[2, 3] = position[2]
+
             self.position = position
             self.orientation = orientation
+            self.T_wt = T
+
         except tf2_ros.TransformException as ex:
             # Fallback to the latest available transform within a 1-second duration
             print(ex)
@@ -1478,15 +1647,13 @@ class RosThread(Node):
             focus_value_ema2 = self.autofocus_data_dict['focus_value_ema2'][-1]
             focus_value_dema = self.autofocus_data_dict['focus_value_dema'][-1]
             previous_focus_value_dema = self.autofocus_data_dict['focus_value_dema'][-1]
+
         K = 2 / (N_ema + 1)  # EMA smoothing factor for the last 15 periods
 
-        focus_value_ema = (K * focus_value - focus_value_ema) + focus_value_ema
-        focus_value_ema2 = (K * focus_value_ema -
-                            focus_value_ema2) + focus_value_ema2
-        focus_value_dema = 2 * focus_value_ema - focus_value_ema2
-
-        if previous_focus_value_dema != 0:
-            ratio = focus_value_dema / previous_focus_value_dema
+        focus_value_ema = K * (focus_value - focus_value_ema) + focus_value_ema
+        focus_value_ema2 = K * \
+            (focus_value_ema - focus_value_ema2) + focus_value_ema2
+        focus_value_dema = max(0.1, 2 * focus_value_ema - focus_value_ema2)
 
         # Update autofocus data dictionary
 
@@ -1514,9 +1681,6 @@ class RosThread(Node):
         self.autofocus_data_dict['position'].append(position)
         self.autofocus_data_dict['orientation'].append(orientation)
 
-        cv2.rectangle(macro_image, (x0, y0), (x1, y1),
-                      color=(255, 255, 255), thickness=4)
-
         this_process_time = time.time()
         macro_image_fps = 1 / (this_process_time - self.last_process_time)
         self.macro_image_fps = 0.5 * macro_image_fps + \
@@ -1524,7 +1688,15 @@ class RosThread(Node):
         self.macro_image_fps = round(self.macro_image_fps, 2)
         self.last_process_time = this_process_time
 
+        display_image = macro_image.copy()
+        cv2.putText(display_image, 'FPS: ' + str(self.macro_image_fps),
+                    (10, 30), cv2.FONT_HERSHEY_PLAIN, 2, (255, 255, 255), 2, cv2.LINE_AA)
+        # draw the ROI rectangle
+        cv2.rectangle(display_image, (x0, y0), (x1, y1), (255, 255, 255), 2)
+        self.display_image = display_image
+
         self.macro_image = macro_image
+        self.cropped_image = cropped_image
 
     def trigger_focus_experiment(self):
         future = self.focus_experiment_cli.call_async(
@@ -1540,7 +1712,29 @@ class RosThread(Node):
                 'Service call failed %r' % (e,))
 
     def get_data(self):
-        return self.rgb_image, self.annotated_rgb_image, self.depth_image, self.depth_intrinsic, self.illuminance_image, self.macro_image, self.T
+        light_map = self.light_map.get_map_image()
+
+        # Look up transform from part_frame to tool0
+        try:
+            tf_pc = self.tfBuffer.lookup_transform(
+                'part_frame', 'camera_link', rclpy.time.Time(seconds=self.timestamp))
+            position = (tf_pc.transform.translation.x,
+                        tf_pc.transform.translation.y, tf_pc.transform.translation.z)
+            orientation = (tf_pc.transform.rotation.x, tf_pc.transform.rotation.y,
+                           tf_pc.transform.rotation.z, tf_pc.transform.rotation.w)
+            # Combine position and R into a 4x4 transformation matrix
+            T = np.eye(4)
+            R = o3d.geometry.get_rotation_matrix_from_quaternion(
+                [orientation[3], orientation[0], orientation[1], orientation[2]])
+            T[:3, :3] = R
+            T[0, 3] = position[0]
+            T[1, 3] = position[1]
+            T[2, 3] = position[2]
+        except:
+            print('Could not get transform from part_frame to tool0')
+            T = np.eye(4)
+
+        return self.rgb_image, self.annotated_rgb_image, self.depth_image, self.depth_intrinsic, self.illuminance_plot, self.display_image, T, light_map
 
     def read_rgb_image(self):
         return self.annotated_rgb_image

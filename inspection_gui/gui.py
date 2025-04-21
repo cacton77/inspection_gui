@@ -176,12 +176,10 @@ class MyGui():
             self.inspection_root_path + '/Lights/led_positions.csv', delimiter=',')
         shape_mm = (200, 200)
         dpmm = 10
-        self.light_map = LightMap(shape_mm, dpmm, light_locations)
 
         self.ros_thread.start()  # processing frames in input stream
         self.reconstruct_thread.start()  # processing frames in input stream
         # self.plotting_thread.start()
-        self.light_map.start()
         # self.moveit_thread.start()
 
         # 3D SCENE ################################################################
@@ -373,20 +371,16 @@ class MyGui():
         self.num_leds = 148
 
         def _on_light_intensity_changed(intensity):
-            self.light_map.set_intensity(intensity)
-            self.set_pixels()
+            self.ros_thread.set_intensity(intensity)
 
         def _on_light_position_x_changed(x):
-            self.light_map.set_mu_x(x)
-            self.set_pixels()
+            self.ros_thread.set_mu_x(x)
 
         def _on_light_position_y_changed(y):
-            self.light_map.set_mu_y(y)
-            self.set_pixels()
+            self.ros_thread.set_mu_y(y)
 
         def _on_light_sigma_changed(sigma):
-            self.light_map.set_sigma(sigma)
-            self.set_pixels()
+            self.ros_thread.set_sigma(sigma)
 
         # Light map
         # Import light positions from led_positions.csv
@@ -749,8 +743,7 @@ class MyGui():
             # Get date and time and use as filename
             file_name = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
 
-            file_path = self.inspection_root_path + \
-                '/Images/' + file_name + '.jpg'
+            file_path = self.inspection_root_path + '/data/Images/' + file_name + '.jpg'
             self.ros_thread.capture_image(file_path)
             self.image_count += 1
 
@@ -821,6 +814,18 @@ class MyGui():
 
         self.monitor_ribbon = gui.Horiz(0, gui.Margins(
             0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+
+        # Add material selection textbox
+        self.material_input = gui.TextEdit()
+        self.material_input.placeholder_text = "Material"
+
+        def _on_material_input(value):
+            self.material_input.text_value = value
+            self.ros_thread.set_material(value)
+
+        self.material_input.set_on_value_changed(_on_material_input)
+
+        self.monitor_ribbon.add_child(self.material_input)
 
         self.monitor_image_panel = gui.Vert(0, gui.Margins(
             0, 0, 0, 0))
@@ -1131,13 +1136,27 @@ class MyGui():
         self.focus_metric_plot_image = gui.ImageWidget()
         self.focus_metric_image = gui.ImageWidget()
         self.velocity_plot_image = gui.ImageWidget()
+        self.fv_ratio_plot_image = gui.ImageWidget()
 
         focus_vert.add_child(grid)
         focus_vert.add_child(self.focus_metric_plot_image)
         focus_vert.add_child(self.velocity_plot_image)
+        focus_vert.add_child(self.fv_ratio_plot_image)
         focus_vert.add_child(self.focus_metric_image)
 
+        # Illuminance Panel
+
+        illuminance_vert = gui.Vert(0, gui.Margins(
+            0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+
+        grid = gui.VGrid(2, 0.25 * em)
+        self.illuminance_image = gui.ImageWidget()
+
+        illuminance_vert.add_child(gui.Label("Illuminance"))
+        illuminance_vert.add_child(self.illuminance_image)
+
         camera_tabs.add_tab("Focus", focus_vert)
+        camera_tabs.add_tab("Illuminance", illuminance_vert)
         camera_tabs.add_tab("Settings", settings_vert)
 
         camera_vert = gui.Vert(0, gui.Margins(
@@ -1158,8 +1177,6 @@ class MyGui():
         rgb_grid = gui.VGrid(1, 0.25 * em)
         depth_grid = gui.VGrid(1, 0.25 * em)
         illuminance_grid = gui.VGrid(1, 0.25 * em)
-
-        self.illuminance_image = gui.ImageWidget()
 
         # RGB TAB #################################
 
@@ -1186,9 +1203,6 @@ class MyGui():
         depth_grid.add_child(depth_trunc_edit)
 
         # ILLUMINANCE TAB #########################
-
-        self.illuminance_image = gui.ImageWidget()
-        illuminance_grid.add_child(self.illuminance_image)
 
         self.stereo_camera_tabs = gui.TabControl()
         # tabs.add_tab("RGB", rgb_grid)
@@ -1679,14 +1693,6 @@ class MyGui():
 
         self.ros_thread.send_transform(
             T, self.camera_frame_parent, self.camera_frame)
-
-    def set_pixels(self):
-        # Make every tenth pixel white
-        pixel_values = self.light_map.get_pixel_values()
-        pixel_colors = []
-        for value in pixel_values:
-            pixel_colors.append((value, value, value))
-        self.ros_thread.pixels_to(pixel_colors)
 
     def _on_menu_new(self):
         pass
@@ -2217,18 +2223,48 @@ class MyGui():
         viewpoint_geom.transform(viewpoint_tf)
 
         viewpoint_line = o3d.geometry.LineSet()
-        viewpoint_line.points = o3d.utility.Vector3dVector(
-            np.array([origin, point]))
+        # Calculate distance from origin to point
+        distance_cm = np.linalg.norm(np.array(point) - np.array(origin))
+        distance_mm = distance_cm * 10
+        N = int(distance_mm)
+        # Generate N points along the line from origin to point
+        t = np.linspace(0, 1, N)
+        line_points = (1 - t)[:, np.newaxis] * \
+            np.array(origin) + t[:, np.newaxis] * np.array(point)
+        viewpoint_line.points = o3d.utility.Vector3dVector(line_points)
         viewpoint_line.lines = o3d.utility.Vector2iVector(
-            np.array([[0, 1]]))
+            np.array([[i, i+1] for i in range(N-1)]))
+        # Paint the line as a gradient from origin to point
+        colors = np.array([np.linspace(0, color[0], N),
+                           np.linspace(0, color[1], N),
+                           np.linspace(0, color[2], N)]).T
+        # Create float64 array for colors
+        colors = colors.astype(np.float64)
+        # Create random (N, 3) array for colors
+        # colors = np.random.rand(N, 3).astype(np.float64)
+        viewpoint_line.colors = o3d.utility.Vector3dVector(colors)
         viewpoint_line.paint_uniform_color(color)
+        for i in range(N-1):
+            np.asarray(viewpoint_line.colors)[i, :] = colors[i, :]
+
+        # Check for self.ros.autofocus_data_dict
+        if len(self.ros_thread.autofocus_data_dict['focus_image']) > 0:
+            print(self.ros_thread.autofocus_data_dict['focus_value'])
+            print(self.ros_thread.autofocus_data_dict['position'])
+        else:
+            print("No focus image data available")
 
         self.scene_widget.scene.add_geometry(
             f"{new_region_name}_viewpoint", viewpoint_geom, self.selected_viewpoint_material)
         self.scene_widget.scene.add_geometry(
             new_region_name, point_cloud, self.part_point_cloud_material)
-        # self.scene_widget.scene.add_geometry(
-        # f"{new_region_name}_line", viewpoint_line, self.selected_line_material)
+
+        line_mat = o3d.visualization.rendering.MaterialRecord()
+        line_mat.shader = 'unlitLine'
+        line_mat.line_width = 5.0
+        line_mat.base_color = [0.5, 0.5, 0.5, 1.0]
+        self.scene_widget.scene.add_geometry(
+            f"{new_region_name}_line", viewpoint_line, self.selected_line_material)
 
     def move_to_selected_viewpoint(self):
         self.moving_to_viewpoint_flag = True
@@ -2256,7 +2292,7 @@ class MyGui():
 
     def update_scene(self):
 
-        rgb_image, annotated_rgb_image, depth_image, depth_intrinsic, illuminance_image, gphoto2_image, T = self.ros_thread.get_data()
+        rgb_image, annotated_rgb_image, depth_image, depth_intrinsic, illuminance_plot, gphoto2_image, T, light_map_cv2 = self.ros_thread.get_data()
 
         if (T == np.eye(4)).all() and self.viewpoint_dict is not None:
             selected_region_name = f"region_{self.selected_viewpoint}"
@@ -2270,14 +2306,20 @@ class MyGui():
         rgb_image_o3d = o3d.geometry.Image(rgb_image)
         annotated_rgb_image_o3d = o3d.geometry.Image(annotated_rgb_image)
         depth_image_o3d = o3d.geometry.Image(depth_image)
-        illuminance_image_o3d = o3d.geometry.Image(
-            cv2.cvtColor(illuminance_image, cv2.COLOR_GRAY2RGB))
+        illuminance_image_o3d = o3d.geometry.Image(illuminance_plot)
+
+        # Update illuminance image
+        self.illuminance_image.update_image(illuminance_image_o3d)
 
         # Pass data to Plotting Process
 
-        focus_metric_image_cv2 = self.ros_thread.autofocus_data_dict['focus_image'][-1]
+        if len(self.ros_thread.autofocus_data_dict['focus_image']) > 0:
+            focus_metric_image_cv2 = self.ros_thread.autofocus_data_dict['focus_image'][-1]
+        else:
+            focus_metric_image_cv2 = None
         focus_value_plot_cv2 = self.ros_thread.autofocus_data_dict['focus_value_plot']
         velocity_plot_cv2 = self.ros_thread.autofocus_data_dict['velocity_plot']
+        fv_ratio_plot_cv2 = self.ros_thread.fv_ratio_plot
 
         # Get data from ReconstructThread
         live_point_cloud = self.reconstruct_thread.live_point_cloud
@@ -2294,8 +2336,6 @@ class MyGui():
         # UPDATE LIGHT PANEL ####################################################
 
         if self.light_panel.get_is_open():
-
-            light_map_cv2 = self.light_map.get_map_image()
 
             image_o3d = o3d.geometry.Image(light_map_cv2)
             self.light_map_image.update_image(image_o3d)
@@ -2323,9 +2363,6 @@ class MyGui():
                 # self.depth_image.update_image(depth_image_o3d)
 
             # ILLUMINANCE TAB ########################################
-
-            elif stereo_tab == MyGui.STEREO_ILLUMINANCE_TAB:
-                self.illuminance_image.update_image(illuminance_image_o3d)
 
         tab_index = self.main_tabs.selected_tab_index
 
@@ -2498,34 +2535,34 @@ class MyGui():
             # gphoto2_image = cv2.rectangle(
             #     gphoto2_image, (roi_x, roi_y), (roi_x+roi_width, roi_y+roi_height), (255, 255, 255), 2)
             # Draw a circle in the center of the image
-            monitor_image = cv2.circle(
-                monitor_image, (int(monitor_image.shape[1]/2), int(monitor_image.shape[0]/2)), 10, (255, 255, 255), 1)
+            # monitor_image = cv2.circle(
+            #     monitor_image, (int(monitor_image.shape[1]/2), int(monitor_image.shape[0]/2)), 10, (255, 255, 255), 1)
 
-            if self.pan_pos is not None:
-                frame_origin = (self.monitor_image_widget.frame.get_left(),
-                                self.monitor_image_widget.frame.get_top())
+            # if self.pan_pos is not None:
+            #     frame_origin = (self.monitor_image_widget.frame.get_left(),
+            #                     self.monitor_image_widget.frame.get_top())
 
-                frame_width = self.monitor_image_widget.frame.width
-                frame_height = self.monitor_image_widget.frame.height
+            #     frame_width = self.monitor_image_widget.frame.width
+            #     frame_height = self.monitor_image_widget.frame.height
 
-                pos = ((self.pan_pos[0] - frame_origin[0])/frame_width,
-                       (self.pan_pos[1] - frame_origin[1])/frame_height)
+            #     pos = ((self.pan_pos[0] - frame_origin[0])/frame_width,
+            #            (self.pan_pos[1] - frame_origin[1])/frame_height)
 
-                width = monitor_image.shape[1]
-                height = monitor_image.shape[0]
+            #     width = monitor_image.shape[1]
+            #     height = monitor_image.shape[0]
 
-                p = (int(pos[0]*width), int(pos[1]*height))
+            #     p = (int(pos[0]*width), int(pos[1]*height))
 
-                if self.pan_goal is not None:
-                    goal = ((self.pan_goal[0] - frame_origin[0])/frame_width,
-                            (self.pan_goal[1] - frame_origin[1])/frame_height)
+            #     if self.pan_goal is not None:
+            #         goal = ((self.pan_goal[0] - frame_origin[0])/frame_width,
+            #                 (self.pan_goal[1] - frame_origin[1])/frame_height)
 
-                    g = (int(goal[0]*width), int(goal[1]*height))
-                    monitor_image = cv2.arrowedLine(
-                        monitor_image, p, g, (255, 255, 255), 5)
-                # Draw circle at pan_pos
-                monitor_image = cv2.circle(
-                    monitor_image, p, 10, (255, 255, 255), -1)
+            #         g = (int(goal[0]*width), int(goal[1]*height))
+            #         monitor_image = cv2.arrowedLine(
+            #             monitor_image, p, g, (255, 255, 255), 5)
+            #     # Draw circle at pan_pos
+            #     monitor_image = cv2.circle(
+            #         monitor_image, p, 10, (255, 255, 255), -1)
 
             monitor_image_o3d = o3d.geometry.Image(monitor_image)
 
@@ -2552,11 +2589,15 @@ class MyGui():
             focus_metric_plot_o3d = o3d.geometry.Image(focus_value_plot_cv2)
             self.focus_metric_plot_image.update_image(focus_metric_plot_o3d)
 
-            focus_metric_image_o3d = o3d.geometry.Image(focus_metric_image_cv2)
-            self.focus_metric_image.update_image(focus_metric_image_o3d)
+            if focus_metric_image_cv2 is not None:
+                focus_metric_image_o3d = o3d.geometry.Image(
+                    focus_metric_image_cv2)
+                self.focus_metric_image.update_image(focus_metric_image_o3d)
 
             velocity_plot_o3d = o3d.geometry.Image(velocity_plot_cv2)
+            fv_ratio_plot_o3d = o3d.geometry.Image(fv_ratio_plot_cv2)
             self.velocity_plot_image.update_image(velocity_plot_o3d)
+            self.fv_ratio_plot_image.update_image(fv_ratio_plot_o3d)
 
             # Update log
         # self.log_list = self.ros_thread.read_log()
