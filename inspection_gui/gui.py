@@ -499,8 +499,6 @@ class MyGui():
         self.part_frame_panel.background_color = self.panel_color
         self.part_frame_panel.set_is_open(False)
 
-        # origin_frame_dropdown = gui.Combobox()
-
         self.part_frame_parent = self.config_dict['part']['frame']['parent']
         self.part_frame = self.config_dict['part']['frame']['child']
         x = self.config_dict['part']['frame']['x']
@@ -664,6 +662,25 @@ class MyGui():
         grid.add_child(self.camera_yaw_edit)
 
         self.camera_frame_panel.add_child(grid)
+
+        # REGION PANEL ###############################################################
+
+        self.region_viz_panel = gui.Vert(0, gui.Margins(
+            0.25 * em, 0.25 * em, 0.25 * em, 0.25 * em))
+        self.region_viz_panel.background_color = self.panel_color
+
+        grid = gui.VGrid(2, 0.25 * em)
+        grid.add_child(gui.Label("Region Visualization: "))
+
+        # Add dropdown to region_viz_panel
+        self.region_selection = gui.Combobox()
+        self.region_selection.add_item("")
+        self.region_selection.add_item("Region 2")
+        self.region_selection.add_item("Region 3")
+
+        grid.add_child(self.region_selection)
+
+        self.region_viz_panel.add_child(grid)
 
         # INSPECTION ACTION PANEL ##################################################
 
@@ -1377,6 +1394,7 @@ class MyGui():
         self.window.add_child(self.main_tabs)
         self.window.add_child(self.part_frame_panel)
         self.window.add_child(self.camera_frame_panel)
+        self.window.add_child(self.region_viz_panel)
         self.window.add_child(self.footer_panel)
         self.window.add_child(self.log_panel)
         self.window.add_child(self.viewpoint_generation_panel)
@@ -2234,23 +2252,35 @@ class MyGui():
         viewpoint_line.points = o3d.utility.Vector3dVector(line_points)
         viewpoint_line.lines = o3d.utility.Vector2iVector(
             np.array([[i, i+1] for i in range(N-1)]))
-        # Paint the line as a gradient from origin to point
-        colors = np.array([np.linspace(0, color[0], N),
-                           np.linspace(0, color[1], N),
-                           np.linspace(0, color[2], N)]).T
-        # Create float64 array for colors
-        colors = colors.astype(np.float64)
-        # Create random (N, 3) array for colors
-        # colors = np.random.rand(N, 3).astype(np.float64)
-        viewpoint_line.colors = o3d.utility.Vector3dVector(colors)
         viewpoint_line.paint_uniform_color(color)
-        for i in range(N-1):
-            np.asarray(viewpoint_line.colors)[i, :] = colors[i, :]
+
+        colors = np.zeros((N, 3)).astype(np.float64)
 
         # Check for self.ros.autofocus_data_dict
-        if len(self.ros_thread.autofocus_data_dict['focus_image']) > 0:
-            print(self.ros_thread.autofocus_data_dict['focus_value'])
-            print(self.ros_thread.autofocus_data_dict['position'])
+        if len(self.ros_thread.autofocus_data_dict['focus_value']) > 10:
+            focus_values = np.array(
+                self.ros_thread.autofocus_data_dict['focus_value'])
+            af_origin = self.ros_thread.autofocus_data_dict['position'][0]
+            af_distances = []
+            for i in range(len(self.ros_thread.autofocus_data_dict['position'])):
+                af_distances.append(
+                    np.linalg.norm(np.array(af_origin) - np.array(self.ros_thread.autofocus_data_dict['position'][i])))
+            af_distances = np.array(af_distances)
+
+            line_distances = []
+            for i in range(len(line_points)):
+                line_distances.append(
+                    np.linalg.norm(np.array(origin) - np.array(line_points[i])))
+            line_distances = np.array(line_distances)
+
+            for i in range(len(af_distances)):
+                # Get the index of the closest point in line_points to af_distances[i]
+                distances = line_distances - af_distances[i]
+                closest_index = np.argmin(distances) + 100
+                # Set the color of the line point to the focus value
+                np.asarray(viewpoint_line.colors)[closest_index, :] = [
+                    focus_values[i]/np.max(focus_values), 0.0, 0.0]
+            # Find index of line_points closest to af_distances[-1]
         else:
             print("No focus image data available")
 
@@ -2273,6 +2303,71 @@ class MyGui():
         selected_region =  \
             self.viewpoint_dict['regions'][f'region_{self.selected_viewpoint}']
         viewpoint = np.array(selected_region['viewpoint'])
+
+        def rotate_transform_by_rpy(transform_matrix, roll_degrees=0, pitch_degrees=0, yaw_degrees=0):
+            """
+            Rotate a 4x4 homogeneous transform matrix about its local axes
+
+            Parameters:
+            transform_matrix (numpy.ndarray): 4x4 homogeneous transformation matrix
+            roll_degrees (float): Rotation angle around x-axis in degrees
+            pitch_degrees (float): Rotation angle around y-axis in degrees
+            yaw_degrees (float): Rotation angle around z-axis in degrees
+
+            Returns:
+            numpy.ndarray: The rotated 4x4 transformation matrix
+            """
+            # Convert angles from degrees to radians
+            roll = np.radians(roll_degrees)
+            pitch = np.radians(pitch_degrees)
+            yaw = np.radians(yaw_degrees)
+
+            # Create rotation matrices for each axis
+            # Roll (rotation around x-axis)
+            cr, sr = np.cos(roll), np.sin(roll)
+            rot_x = np.array([
+                [1, 0, 0, 0],
+                [0, cr, -sr, 0],
+                [0, sr, cr, 0],
+                [0, 0, 0, 1]
+            ])
+
+            # Pitch (rotation around y-axis)
+            cp, sp = np.cos(pitch), np.sin(pitch)
+            rot_y = np.array([
+                [cp, 0, sp, 0],
+                [0, 1, 0, 0],
+                [-sp, 0, cp, 0],
+                [0, 0, 0, 1]
+            ])
+
+            # Yaw (rotation around z-axis)
+            cy, sy = np.cos(yaw), np.sin(yaw)
+            rot_z = np.array([
+                [cy, -sy, 0, 0],
+                [sy, cy, 0, 0],
+                [0, 0, 1, 0],
+                [0, 0, 0, 1]
+            ])
+
+            # Extract the current orientation and position
+            current_rotation = transform_matrix[:3, :3]
+            current_position = transform_matrix[:3, 3]
+
+            # Combine rotations - order matters! (here using roll -> pitch -> yaw)
+            # This is a common convention, but you can change the order if needed
+            combined_rotation = rot_z[:3, :3] @ rot_y[:3, :3] @ rot_x[:3, :3]
+
+            # Apply the combined rotation in the local frame
+            new_transform = np.identity(4)
+            new_transform[:3, :3] = current_rotation @ combined_rotation
+            new_transform[:3, 3] = current_position
+
+            return new_transform
+
+        # Rotate the viewpoint about its local x-axis by 90, then z-axis by 180
+        viewpoint = rotate_transform_by_rpy(
+            viewpoint, roll_degrees=90, pitch_degrees=180, yaw_degrees=0)
 
         # Convert position to meters
         viewpoint[0, 3] = viewpoint[0, 3] / 100
@@ -2448,23 +2543,23 @@ class MyGui():
 
             # Partitioning Results
 
-            if self.moving_to_viewpoint_flag:
-                if not self.ros_thread.moving_to_viewpoint_flag:
-                    selected_viewpoint_inspectable = self.ros_thread.last_move_successful
-                    print(
-                        f"Selected viewpoint inspectable: {selected_viewpoint_inspectable}")
+            # if self.moving_to_viewpoint_flag:
+            #     if not self.ros_thread.moving_to_viewpoint_flag:
+            #         selected_viewpoint_inspectable = self.ros_thread.last_move_successful
+            #         print(
+            #             f"Selected viewpoint inspectable: {selected_viewpoint_inspectable}")
 
-                    self.moving_to_viewpoint_flag = False
-                    self.t0 = time.time()
+            #         self.moving_to_viewpoint_flag = False
+            #         self.t0 = time.time()
 
-            elif self.running:
-                t1 = time.time()
-                if t1 - self.t0 >= 0.1:
-                    self.viewpoint_slider.int_value = self.viewpoint_slider.int_value + 1 if self.viewpoint_slider.int_value < len(
-                        self.viewpoint_dict['regions'].keys()) else 1
-                    self.select_viewpoint(self.viewpoint_slider.int_value)
-                    self.move_to_selected_viewpoint()
-                    self.t0 = t1
+            # elif self.running:
+            #     t1 = time.time()
+            #     if t1 - self.t0 >= 0.1:
+            #         self.viewpoint_slider.int_value = self.viewpoint_slider.int_value + 1 if self.viewpoint_slider.int_value < len(
+            #             self.viewpoint_dict['regions'].keys()) else 1
+            #         self.select_viewpoint(self.viewpoint_slider.int_value)
+            #         self.move_to_selected_viewpoint()
+            #         self.t0 = t1
 
             if self.partitioner.is_running:
                 progress = self.partitioner.progress
@@ -2779,6 +2874,18 @@ class MyGui():
         left = self.right_panel.frame.get_left() - width - em
 
         self.part_frame_panel.frame = gui.Rect(left, top, width, height)
+
+        # Region Viz Panel
+
+        width = self.region_viz_panel.calc_preferred_size(
+            layout_context, gui.Widget.Constraints()).width
+        height = self.region_viz_panel.calc_preferred_size(
+            layout_context, gui.Widget.Constraints()).height
+
+        top = main_frame_top + 2*em
+        left = self.part_frame_panel.frame.get_left() - width - em
+
+        self.region_viz_panel.frame = gui.Rect(left, top, width, height)
 
         # camera Frame Panel
 

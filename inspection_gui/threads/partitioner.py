@@ -728,7 +728,6 @@ class Partitioner:
 
 # Region growing not added to the smart partition function
 
-
     def rg_not_smart_partition(self, npcd):
         """ Partition PCD into Planar Patches, partition Planar Patches into Regions. """
         print(f'Partitioning part into planar patches:')
